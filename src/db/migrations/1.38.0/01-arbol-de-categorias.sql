@@ -56,6 +56,7 @@ DECLARE
   v_borrar    uuid[];
   n_filas     int := 0;
   n_creadas   int := 0;
+  n_ordenadas int := 0;
   n_movidas   int := 0;
   n_vinculos  int := 0;
   n_faltantes int := 0;
@@ -351,6 +352,17 @@ LOOP
     VALUES (gen_random_uuid(), v_padre, v_nombre, r.kind, r.orden, true, now(), now())
     RETURNING id INTO v_id;
     n_creadas := n_creadas + 1;
+  ELSE
+    -- La que ya existía se queda con sus servicios pero adopta el orden y el
+    -- eje de la lista. Sin esto, una categoría que se mudó conserva el
+    -- display_order del lugar de donde vino y aparece en cualquier posición
+    -- dentro de su rama nueva: "Tratamientos Cosmetológicos" traía el 3 de
+    -- cuando era raíz y salía después de "Rejuvenecimiento Facial".
+    UPDATE categories
+       SET display_order = r.orden, kind = r.kind, updated_at = now()
+     WHERE id = v_id
+       AND (display_order IS DISTINCT FROM r.orden OR kind IS DISTINCT FROM r.kind);
+    GET DIAGNOSTICS n_filas = ROW_COUNT; n_ordenadas := n_ordenadas + n_filas;
   END IF;
 
   mapa := mapa || jsonb_build_object(r.ruta, v_id::text);
@@ -547,8 +559,8 @@ IF v_borrar IS NOT NULL THEN
 END IF;
 
 -- ── I · Qué pasó ───────────────────────────────────────────────────────────
-RAISE NOTICE 'creadas: % · mudanzas: % · vínculos nuevos: % · servicios borrados: % · nombres sin match: %',
-             n_creadas, n_movidas, n_vinculos, coalesce(array_length(v_borrar, 1), 0), n_faltantes;
+RAISE NOTICE 'creadas: % · mudanzas: % · reordenadas: % · vínculos nuevos: % · servicios borrados: % · nombres sin match: %',
+             n_creadas, n_movidas, n_ordenadas, n_vinculos, coalesce(array_length(v_borrar, 1), 0), n_faltantes;
 
 IF n_faltantes > 0 THEN
   RAISE EXCEPTION 'Hay % servicios de la lista que no existen en la base. Revisá los WARNING de arriba: son typos de la migración, no datos faltantes.', n_faltantes;
