@@ -4,10 +4,12 @@ import { z } from "zod";
 import { createDb } from "../../db/client";
 import { auth, requireAuth, requirePermission } from "../../middleware/auth";
 import {
+  createTraining,
   getTrainingById,
   listTrainings,
   listTrainingsAdmin,
-  updateTrainingWebSettings,
+  setTrainingActive,
+  updateTraining,
 } from "../../repositories/trainings.repo";
 import type { AppBindings } from "../../env";
 
@@ -32,12 +34,24 @@ trainings.get("/", zValidator("query", listQuery), async (c) => {
   return c.json(rows.map(serializePrices));
 });
 
-// Lista para administración: todas las activas (visibles o no).
-trainings.get("/admin", auth, requireAuth, requirePermission("sitio-web", "view"), async (c) => {
-  const db = createDb(c.env);
-  const rows = await listTrainingsAdmin(db);
-  return c.json(rows.map(serializePrices));
-});
+// Lista para administración: visibles o no. `includeInactive=true` suma las
+// archivadas, que es lo que pide la vista "Archivados" de Capacitaciones.
+//
+// El guard sigue siendo `sitio-web` y no `catalogo` porque esta ruta ya la usa
+// la pantalla de Sitio Web. No cambia nada en la práctica: las dos secciones
+// tienen exactamente los mismos roles en la matriz de permisos (§1.7).
+trainings.get(
+  "/admin",
+  auth,
+  requireAuth,
+  requirePermission("sitio-web", "view"),
+  zValidator("query", z.object({ includeInactive: z.string().optional() })),
+  async (c) => {
+    const db = createDb(c.env);
+    const rows = await listTrainingsAdmin(db, c.req.valid("query").includeInactive === "true");
+    return c.json(rows.map(serializePrices));
+  },
+);
 
 trainings.get("/:id", async (c) => {
   const db = createDb(c.env);
@@ -46,26 +60,75 @@ trainings.get("/:id", async (c) => {
   return c.json(serializePrices(row));
 });
 
-const patchBody = z
-  .object({
-    isFeatured: z.boolean().optional(),
-    isVisible: z.boolean().optional(),
-    webSortOrder: z.number().int().min(0).optional(),
-  })
-  .refine(
-    (data) =>
-      data.isFeatured !== undefined ||
-      data.isVisible !== undefined ||
-      data.webSortOrder !== undefined,
-    { message: "At least one field (isFeatured, isVisible or webSortOrder) is required" },
-  );
+// Los campos de la capacitación. El PATCH los toma todos opcionales; el POST
+// exige el nombre y nada más, igual que Servicios y Máquinas.
+const trainingFields = {
+  description: z.string().max(5000).nullish(),
+  modality: z.string().max(50).nullish(),
+  location: z.string().max(255).nullish(),
+  totalSessions: z.number().int().min(0).nullish(),
+  durationPerSessionMinutes: z.number().int().min(0).nullish(),
+  prerequisitesText: z.string().max(5000).nullish(),
+  maxParticipants: z.number().int().min(0).nullish(),
+  includesCertification: z.boolean().nullish(),
+  certificationTitle: z.string().max(255).nullish(),
+  listPrice: z.number().min(0).nullish(),
+  cashPrice: z.number().min(0).nullish(),
+  taxCategory: z.string().max(50).nullish(),
+  isVisible: z.boolean().nullish(),
+  isFeatured: z.boolean().nullish(),
+  webSortOrder: z.number().int().min(0).nullish(),
+};
 
-trainings.patch("/:id", auth, requireAuth, requirePermission("sitio-web", "edit"), zValidator("json", patchBody), async (c) => {
+const createBody = z.object({ name: z.string().min(1).max(255), ...trainingFields });
+const patchBody = z
+  .object({ name: z.string().min(1).max(255).optional(), ...trainingFields })
+  .refine((d) => Object.keys(d).length > 0, { message: "Nada para actualizar" });
+
+// Crear — nivel `manage`, como el alta de servicios y máquinas.
+trainings.post(
+  "/",
+  auth,
+  requireAuth,
+  requirePermission("catalogo", "manage"),
+  zValidator("json", createBody),
+  async (c) => {
+    const db = createDb(c.env);
+    const creada = await createTraining(db, c.req.valid("json"));
+    return c.json(serializePrices(creada), 201);
+  },
+);
+
+// Editar. Acepta todos los campos; la pantalla de Sitio Web sigue mandando
+// sólo isFeatured / isVisible / webSortOrder y para ella nada cambió.
+trainings.patch(
+  "/:id",
+  auth,
+  requireAuth,
+  requirePermission("sitio-web", "edit"),
+  zValidator("json", patchBody),
+  async (c) => {
+    const db = createDb(c.env);
+    const updated = await updateTraining(db, c.req.param("id"), c.req.valid("json"));
+    if (!updated) return c.json({ error: "Training not found" }, 404);
+    return c.json(serializePrices(updated));
+  },
+);
+
+// Archivar (soft-delete). Nunca se borra: regla 1.3 — una capacitación puede
+// tener inscripciones y suscripciones colgando.
+trainings.delete("/:id", auth, requireAuth, requirePermission("catalogo", "manage"), async (c) => {
   const db = createDb(c.env);
-  const id = c.req.param("id");
-  const updated = await updateTrainingWebSettings(db, id, c.req.valid("json"));
-  if (!updated) return c.json({ error: "Training not found" }, 404);
-  return c.json(updated);
+  const archivada = await setTrainingActive(db, c.req.param("id"), false);
+  if (!archivada) return c.json({ error: "Training not found" }, 404);
+  return c.json(serializePrices(archivada));
+});
+
+trainings.post("/:id/restore", auth, requireAuth, requirePermission("catalogo", "manage"), async (c) => {
+  const db = createDb(c.env);
+  const restaurada = await setTrainingActive(db, c.req.param("id"), true);
+  if (!restaurada) return c.json({ error: "Training not found" }, 404);
+  return c.json(serializePrices(restaurada));
 });
 
 export { trainings };
