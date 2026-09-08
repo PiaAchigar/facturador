@@ -5,12 +5,15 @@ import { createDb } from "../../db/client";
 import {
   CATEGORY_KINDS,
   createCategory,
+  getCategoryById,
+  getCategoryDeleteImpact,
+  hardDeleteCategory,
   listCategories,
   setCategoryActive,
   updateCategory,
 } from "../../repositories/categories.repo";
-import { auth, requireAuth, requirePermission } from "../../middleware/auth";
-import { notFound } from "../../lib/errors";
+import { auth, requireAdmin, requireAuth, requirePermission } from "../../middleware/auth";
+import { badRequest, notFound } from "../../lib/errors";
 import type { AppBindings, Variables } from "../../env";
 
 type CategoryNode = {
@@ -119,6 +122,29 @@ categoriesRouter.post("/:id/restore", auth, requireAuth, requirePermission("cata
   const restored = await setCategoryActive(db, c.req.param("id"), true);
   if (!restored) throw notFound("Category");
   return c.json(restored);
+});
+
+// Impacto de un hard-delete: qué se desvincularía y si está bloqueado. Solo
+// admin — es el paso previo al DELETE /:id/permanent.
+categoriesRouter.get("/:id/delete-impact", auth, requireAuth, requireAdmin, async (c) => {
+  const db = createDb(c.env);
+  const id = c.req.param("id");
+  if (!(await getCategoryById(db, id))) throw notFound("Category");
+  return c.json(await getCategoryDeleteImpact(db, id));
+});
+
+// Hard-delete real (no el archivado de DELETE /:id). Solo admin. Se bloquea si
+// la categoría tiene subcategorías o si todavía está activa.
+categoriesRouter.delete("/:id/permanent", auth, requireAuth, requireAdmin, async (c) => {
+  const db = createDb(c.env);
+  const id = c.req.param("id");
+  if (!(await getCategoryById(db, id))) throw notFound("Category");
+
+  const impacto = await getCategoryDeleteImpact(db, id);
+  if (impacto.blocked) throw badRequest(impacto.blockReason!);
+
+  await hardDeleteCategory(db, id);
+  return c.json({ ok: true });
 });
 
 export { categoriesRouter };

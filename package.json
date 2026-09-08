@@ -12,12 +12,13 @@
     "test:watch": "vitest",
     "db:up": "docker compose up -d --wait db",
     "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && docker compose up -d --wait db",
+    "db:reset": "docker compose down -v && docker compose up -d --wait db && ./scripts/traer-catalogo.sh",
     "db:psql": "docker compose exec db psql -U piubella -d piubella",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "db:reset:vacio": "docker compose down -v && docker compose up -d --wait db"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.4.2",

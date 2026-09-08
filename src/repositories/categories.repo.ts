@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
-import { categories } from "../db/schema";
+import { categories, serviceCategory } from "../db/schema";
 
 const categoryFields = {
   id: categories.id,
@@ -96,4 +96,61 @@ export async function setCategoryActive(db: Db, id: string, isActive: boolean) {
     .where(eq(categories.id, id))
     .returning(categoryFields);
   return rows[0] ?? null;
+}
+
+// ── Hard-delete (borrado permanente, admin-only) ────────────────────────────
+
+/**
+ * Qué pasaría si se borrara la categoría para siempre.
+ *
+ * Se bloquea por dos motivos, y los dos son de verdad, no precaución:
+ *
+ *   · **Tiene subcategorías.** `fk_cat_parent` es NO ACTION, así que el DELETE
+ *     fallaría con un error de FK. Peor: si algún día se pusiera en CASCADE,
+ *     borrar una raíz se llevaría en silencio una rama de siete niveles.
+ *   · **Está activa.** El botón sólo aparece del lado de archivados, pero la
+ *     regla vive acá: una categoría activa puede estar en el menú del sitio
+ *     público, y borrarla lo cambia sin aviso.
+ *
+ * Los vínculos con servicios NO bloquean: `service_category` sólo relaciona.
+ * Al borrarlos, cada servicio pierde una etiqueta y sigue existiendo. Se
+ * cuentan igual para que la confirmación diga cuántos van a quedar sin ella.
+ */
+export async function getCategoryDeleteImpact(db: Db, id: string) {
+  const [cat, hijas, servicios] = await Promise.all([
+    getCategoryById(db, id),
+    db.select({ id: categories.id }).from(categories).where(eq(categories.parentCategoryId, id)),
+    db
+      .select({ id: serviceCategory.serviceId })
+      .from(serviceCategory)
+      .where(eq(serviceCategory.categoryId, id)),
+  ]);
+
+  const motivos: string[] = [];
+  if (hijas.length > 0) {
+    motivos.push(
+      `tiene ${hijas.length} subcategoría(s) colgando (eliminalas o movelas a otra madre primero)`,
+    );
+  }
+  if (cat?.isActive) motivos.push("está activa (archivala primero)");
+
+  return {
+    blocked: motivos.length > 0,
+    blockReason: motivos.length > 0 ? `No se puede eliminar: ${motivos.join(" y ")}.` : undefined,
+    cascade: { serviceLinks: servicios.length },
+  };
+}
+
+/**
+ * Borra la categoría y sus vínculos con servicios, en una transacción.
+ *
+ * La ruta tiene que haber verificado `getCategoryDeleteImpact` antes: acá no se
+ * vuelve a chequear, igual que en `hardDeleteService`.
+ */
+export async function hardDeleteCategory(db: Db, id: string): Promise<boolean> {
+  const deleted = await db.transaction(async (tx) => {
+    await tx.delete(serviceCategory).where(eq(serviceCategory.categoryId, id));
+    return tx.delete(categories).where(eq(categories.id, id)).returning({ id: categories.id });
+  });
+  return deleted.length > 0;
 }
