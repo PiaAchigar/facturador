@@ -258,6 +258,22 @@ export const serviceMachine = pgTable("service_machine", {
   createdAt: createdAt(),
 });
 
+/**
+ * La receta de un servicio (1.43.0): qué insumos consume y cuánto de cada uno.
+ *
+ * `quantity` es decimal, no entero: media ampolla es media ampolla, y un insumo
+ * medido en ml casi nunca se consume entero. Único por (service_id,
+ * product_id) — dos filas del mismo par serían dos verdades sobre lo mismo.
+ */
+export const serviceProduct = pgTable("service_product", {
+  id: id(),
+  serviceId: uuid("service_id"),
+  productId: uuid("product_id"),
+  quantity: decimal("quantity", { precision: 10, scale: 3 }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 export const serviceProviderMachine = pgTable("service_provider_machine", {
   id: id(),
   serviceProviderId: uuid("service_provider_id"),

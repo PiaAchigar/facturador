@@ -11,6 +11,7 @@ import {
   setSupplyActive,
   updateSupply,
 } from "../../repositories/supplies.repo";
+import { asignarInsumoAServicios, listServiciosDeInsumo } from "../../repositories/recetas.repo";
 import type { AppBindings, Variables } from "../../env";
 
 const suppliesRouter = new Hono<{ Bindings: AppBindings; Variables: Variables }>();
@@ -109,6 +110,47 @@ suppliesRouter.post(
     const restored = await setSupplyActive(db, c.req.param("id"), true);
     if (!restored) throw notFound("Supply");
     return c.json(serialize(restored));
+  },
+);
+
+// ── Carga masiva: un insumo → muchos servicios (1.43.0) ─────────────────────
+
+/** Qué servicios usan este insumo. Alimenta el selector de la carga masiva. */
+suppliesRouter.get(
+  "/:id/services",
+  auth,
+  requireAuth,
+  requirePermission("catalogo", "edit"),
+  async (c) => {
+    const db = createDb(c.env);
+    const rows = await listServiciosDeInsumo(db, c.req.param("id"));
+    return c.json(rows.map((r) => ({ ...r, quantity: Number(r.quantity) })));
+  },
+);
+
+/**
+ * Asigna este insumo, con la misma cantidad, a la lista de servicios que venga.
+ *
+ * Existe porque cargar receta por receta son 120 modales. Sólo toca este
+ * insumo: no borra el resto de la receta de cada servicio.
+ */
+suppliesRouter.put(
+  "/:id/services",
+  auth,
+  requireAuth,
+  requirePermission("catalogo", "edit"),
+  zValidator(
+    "json",
+    z.object({
+      serviceIds: z.array(z.string().uuid()).default([]),
+      quantity: z.number().positive(),
+    }),
+  ),
+  async (c) => {
+    const db = createDb(c.env);
+    const { serviceIds, quantity } = c.req.valid("json");
+    const resumen = await asignarInsumoAServicios(db, c.req.param("id"), serviceIds, quantity);
+    return c.json(resumen);
   },
 );
 

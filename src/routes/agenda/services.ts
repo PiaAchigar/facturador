@@ -51,6 +51,8 @@ import {
   listWeeklyAvailabilityForAllProviders,
   setWeeklyAvailability,
 } from "../../repositories/provider-availability.repo";
+import { costoDeReceta } from "../../lib/receta";
+import { listRecetaDeServicio, setRecetaDeServicio } from "../../repositories/recetas.repo";
 import { localDayRangeUtc, todayLocal } from "../../lib/time";
 import { isForeignKeyViolation } from "../../lib/db-errors";
 import type { AppBindings, Variables } from "../../env";
@@ -264,6 +266,43 @@ services.put(
   async (c) => {
     const db = createDb(c.env);
     await setServiceCategories(db, c.req.param("id"), c.req.valid("json").categoryIds);
+    return c.json({ ok: true });
+  },
+);
+
+// ── Receta: qué insumos consume el servicio (1.43.0) ────────────────────────
+
+// Los insumos del servicio, con su costo, para prefill del modal. Staff.
+services.get("/:id/supplies", auth, requireAuth, requirePermission("catalogo", "edit"), async (c) => {
+  const db = createDb(c.env);
+  const rows = await listRecetaDeServicio(db, c.req.param("id"));
+  const lineas = rows.map((r) => ({
+    ...r,
+    quantity: Number(r.quantity),
+    unitCost: r.unitCost != null ? Number(r.unitCost) : null,
+  }));
+  // El costo en insumos de hacerlo una vez: es la mitad de por qué Laura pidió
+  // esta pantalla (la otra mitad es el stock).
+  return c.json({ lineas, costoTotal: costoDeReceta(lineas) });
+});
+
+// Reemplaza la receta completa. Staff.
+services.put(
+  "/:id/supplies",
+  auth,
+  requireAuth,
+  requirePermission("catalogo", "edit"),
+  zValidator(
+    "json",
+    z.object({
+      supplies: z
+        .array(z.object({ productId: z.string().uuid(), quantity: z.number().nullable() }))
+        .default([]),
+    }),
+  ),
+  async (c) => {
+    const db = createDb(c.env);
+    await setRecetaDeServicio(db, c.req.param("id"), c.req.valid("json").supplies);
     return c.json({ ok: true });
   },
 );
