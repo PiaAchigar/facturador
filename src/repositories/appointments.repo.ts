@@ -42,6 +42,8 @@ export async function getBusyAppointmentsForProviders(
   if (providerIds.length === 0) return [];
   return db
     .select({
+      // `id` para poder excluir un turno de su propio cálculo al reagendarlo.
+      id: appointments.id,
       providerId: appointments.serviceProviderId,
       machineId: appointments.machineId,
       appointmentStart: appointments.appointmentStart,
@@ -67,6 +69,7 @@ export async function getBusyAppointmentsForMachines(
   if (machineIds.length === 0) return [];
   return db
     .select({
+      id: appointments.id,
       machineId: appointments.machineId,
       appointmentStart: appointments.appointmentStart,
       appointmentEnd: appointments.appointmentEnd,

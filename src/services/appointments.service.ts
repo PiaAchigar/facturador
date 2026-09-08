@@ -1,6 +1,11 @@
 import type { Db } from "../db/client";
 import { badRequest, conflict, notFound } from "../lib/errors";
 import { subtractAll, type Interval } from "../lib/intervals";
+import {
+  filaDeReagendado,
+  huboMovimiento,
+  type QuienYPorQue,
+} from "../lib/reagendado";
 import { localDayRangeUtc, utcToLocalDateString, utcToLocalMinutes } from "../lib/time";
 import {
   getAppointmentById,
@@ -9,6 +14,7 @@ import {
   listAppointmentsByRange,
   updateAppointment,
 } from "../repositories/appointments.repo";
+import { recordReschedule } from "../repositories/appointment-reschedule.repo";
 import { creditCustomer, getCustomerById } from "../repositories/customers.repo";
 import { cancelDeal, getDealByAppointmentId } from "../repositories/deals.repo";
 import { getActiveAgreement } from "../repositories/providers.repo";
@@ -235,7 +241,19 @@ export async function updateAppointmentStatus(
   });
 }
 
-export async function rescheduleAppointment(db: Db, id: string, newStart: string) {
+/**
+ * Mueve un turno y deja constancia.
+ *
+ * `quien` trae el usuario del JWT y el motivo opcional que escribió quien lo
+ * movió. Es opcional para no romper a nadie que llame a esto sin contexto de
+ * request, pero el endpoint siempre lo manda.
+ */
+export async function rescheduleAppointment(
+  db: Db,
+  id: string,
+  newStart: string,
+  quien: QuienYPorQue = {},
+) {
   const startDate = new Date(newStart);
   if (Number.isNaN(startDate.getTime())) throw badRequest("Fecha de inicio inválida");
 
@@ -245,7 +263,9 @@ export async function rescheduleAppointment(db: Db, id: string, newStart: string
   if (!appt.serviceId || !appt.serviceProviderId) throw badRequest("Turno sin servicio o proveedora");
 
   const localDate = utcToLocalDateString(startDate);
-  const ctx = await loadAvailabilityContext(db, appt.serviceId, localDate, appt.serviceProviderId);
+  // El quinto argumento saca a este mismo turno del cálculo de ocupación: si no,
+  // se bloquea a sí mismo y no se lo puede correr media hora.
+  const ctx = await loadAvailabilityContext(db, appt.serviceId, localDate, appt.serviceProviderId, id);
   if (!ctx.open) throw conflict("El local está cerrado ese día");
   if (ctx.providers.length === 0) throw conflict("La proveedora no está disponible ese día");
 
@@ -266,6 +286,14 @@ export async function rescheduleAppointment(db: Db, id: string, newStart: string
     );
     const realClashes = clashes.filter((c) => c.id !== id);
     if (realClashes.length > 0) throw conflict("El horario acaba de ser tomado por otro turno");
+
+    // Antes del UPDATE, porque después la fecha vieja ya no existe en ningún
+    // lado. Va en la misma transacción: o se mueve y queda registrado, o no
+    // pasa ninguna de las dos cosas.
+    const franja = { start: startDate, end: endDate, durationMinutes: ctx.durationMinutes };
+    if (huboMovimiento(appt, franja)) {
+      await recordReschedule(tx, filaDeReagendado(appt, franja, quien));
+    }
 
     return updateAppointment(tx, id, {
       appointmentStart:      startDate,

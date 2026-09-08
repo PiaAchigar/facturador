@@ -71,11 +71,21 @@ export type AvailabilityContext = {
   requiresMachine: boolean;
 };
 
+/**
+ * `excludeAppointmentId` saca un turno del cálculo de ocupación.
+ *
+ * Es lo que hace posible reagendar un turno DENTRO de su propia franja: sin
+ * esto, un turno de 9:30 a 10:30 se bloquea a sí mismo y moverlo a las 10:00
+ * fallaba con "La proveedora no tiene ese horario disponible" — un mensaje que
+ * además miente, porque la proveedora está libre. Sólo lo usa el reagendado; al
+ * crear un turno y al listar slots no hay ningún turno propio que ignorar.
+ */
 export async function loadAvailabilityContext(
   db: Db,
   serviceId: string,
   date: string,
   providerIdFilter?: string,
+  excludeAppointmentId?: string,
 ): Promise<AvailabilityContext> {
   const svc = await getServiceById(db, serviceId);
   if (!svc) throw notFound("Service");
@@ -168,6 +178,7 @@ export async function loadAvailabilityContext(
   const busyAppointments = await getBusyAppointmentsForProviders(db, providerIds, dayRange);
   const busyByProvider = new Map<string, Interval[]>();
   for (const appt of busyAppointments) {
+    if (appt.id === excludeAppointmentId) continue;
     if (!appt.providerId || !appt.appointmentStart || !appt.appointmentEnd) continue;
     const list = busyByProvider.get(appt.providerId) ?? [];
     list.push({
@@ -202,6 +213,7 @@ export async function loadAvailabilityContext(
     }
     const machineBusy = await getBusyAppointmentsForMachines(db, orderedMachineIds, dayRange);
     for (const appt of machineBusy) {
+      if (appt.id === excludeAppointmentId) continue;
       if (!appt.machineId || !appt.appointmentStart || !appt.appointmentEnd) continue;
       const list = busyByMachine.get(appt.machineId) ?? [];
       list.push({

@@ -54,6 +54,7 @@ services:
       - ./src/db/migrations/1.36.0/01-pack-por-combo.sql:/docker-entrypoint-initdb.d/39c-pack-por-combo.sql:ro
       - ./src/db/migrations/1.37.0/01-ejes-catalogo.sql:/docker-entrypoint-initdb.d/39d-ejes-catalogo.sql:ro
       - ./src/db/migrations/1.39.0/01-reconciliar-esquema.sql:/docker-entrypoint-initdb.d/39e-reconciliar-esquema.sql:ro
+      - ./src/db/migrations/1.40.0/01-historial-reagendamientos.sql:/docker-entrypoint-initdb.d/39f-historial-reagendamientos.sql:ro
       #
       # Acá arriba van SÓLO las migraciones de ESQUEMA. Las de DATOS no se
       # montan y no es un olvido: traen UUIDs de producción hardcodeados y

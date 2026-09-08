@@ -292,6 +292,27 @@ export const appointments = pgTable("appointments", {
   updatedAt: updatedAt(),
 });
 
+/**
+ * Historial de reagendamientos (1.40.0). Append-only: una fila por movimiento.
+ *
+ * Antes de esta tabla, mover un turno pisaba `appointment_start` y la fecha
+ * anterior se perdía. La fila vigente sigue siendo la de `appointments`; esto
+ * es el rastro de cómo llegó ahí.
+ */
+export const appointmentReschedule = pgTable("appointment_reschedule", {
+  id: id(),
+  appointmentId: uuid("appointment_id"),
+  previousStart: timestamp("previous_start"),
+  previousEnd: timestamp("previous_end"),
+  previousDurationMinutes: integer("previous_duration_minutes"),
+  newStart: timestamp("new_start"),
+  newEnd: timestamp("new_end"),
+  newDurationMinutes: integer("new_duration_minutes"),
+  reason: text("reason"),
+  rescheduledByUserId: uuid("rescheduled_by_user_id"),
+  createdAt: createdAt(),
+});
+
 export const openHours = pgTable("open_hours", {
   id: id(),
   dayOfWeek: integer("day_of_week"), // 0=domingo ... 6=sábado

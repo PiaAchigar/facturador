@@ -10,6 +10,7 @@ import {
   rescheduleAppointment,
   updateAppointmentStatus,
 } from "../../services/appointments.service";
+import { listReschedules } from "../../repositories/appointment-reschedule.repo";
 import { getAppointmentById, getAppointmentDetail } from "../../repositories/appointments.repo";
 import { getDealByAppointmentId } from "../../repositories/deals.repo";
 import { requireAuth } from "../../middleware/auth";
@@ -117,12 +118,25 @@ appointmentsRouter.patch("/:id", requireAuth, zValidator("json", patchBody), asy
 
 const rescheduleBody = z.object({
   newStart: z.string().datetime({ offset: true }),
+  // Opcional: quien mueve el turno puede escribir por qué. Queda en el
+  // historial, que es lo único que después explica un cambio de fecha.
+  reason: z.string().max(500).optional(),
 });
 
 appointmentsRouter.patch("/:id/reschedule", requireAuth, zValidator("json", rescheduleBody), async (c) => {
   const db      = createDb(c.env);
-  const updated = await rescheduleAppointment(db, c.req.param("id"), c.req.valid("json").newStart);
+  const body    = c.req.valid("json");
+  const updated = await rescheduleAppointment(db, c.req.param("id"), body.newStart, {
+    userId: c.get("userId"),
+    reason: body.reason ?? null,
+  });
   return c.json(updated);
+});
+
+/** Historial de movimientos del turno, del más nuevo al más viejo. */
+appointmentsRouter.get("/:id/reschedules", requireAuth, async (c) => {
+  const db = createDb(c.env);
+  return c.json(await listReschedules(db, c.req.param("id")));
 });
 
 export { appointmentsRouter };
