@@ -1,0 +1,196 @@
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import type { Db } from "../db/client";
+import { promotions, service } from "../db/schema";
+import { precioDeServicio } from "../lib/combo-pricing";
+import { todayLocal } from "../lib/time";
+import type { ItemVendible, PromoVendible } from "../lib/cotizacion";
+import { getComboById, listCombos } from "./combos.repo";
+import { leerConfig, listarCombos, obtenerCombo } from "./depilacion.repo";
+
+/**
+ * El catálogo de lo que se puede vender, en una sola forma.
+ *
+ * Los tres orígenes viven en tablas distintas y con precios que se calculan
+ * distinto; acá salen todos como `ItemVendible`, que es lo único que la
+ * cotización necesita saber. La pantalla de venta no tiene que aprenderse el
+ * catálogo: pide esto y muestra lo que venga.
+ */
+
+const num = (v: unknown) => (v == null ? null : Number(v));
+
+/** `assembleCombo` recibe la cabecera como `Record<string, unknown>` y la
+ *  desparrama, así que del otro lado los campos propios del combo llegan sin
+ *  tipo. Esto los recupera en un solo lugar en vez de castear en cada uso. */
+type ComboArmado = { servicesSubtotal: number; finalAmount: number } & Record<string, unknown>;
+
+function comboVendible(c: ComboArmado): ItemVendible {
+  return {
+    origen: "combo",
+    id: c.id as string,
+    nombre: (c.name as string | null) ?? "Sin nombre",
+    base: c.servicesSubtotal,
+    conDescuento: c.finalAmount,
+    validityMonths: (c.validityMonths as number | null) ?? null,
+  };
+}
+
+/** Un item con lo que hace falta para mostrarlo en una lista y elegirlo. */
+export type ItemDeCatalogo = ItemVendible & {
+  /** Sesiones que lleva el pack de este item, si es un pack. */
+  packSesiones: number | null;
+  /** Precio de lista de la venta más común, para ordenar y mostrar. */
+  precioDesde: number;
+};
+
+function aItemDeCatalogo(item: ItemVendible): ItemDeCatalogo {
+  return item.origen === "combo"
+    ? { ...item, packSesiones: null, precioDesde: item.conDescuento }
+    : { ...item, packSesiones: item.politica.sesiones, precioDesde: item.unitario };
+}
+
+export async function listCatalogoVendible(db: Db) {
+  const [genericos, depilacion, servicios, config] = await Promise.all([
+    listCombos(db),
+    listarCombos(db),
+    db
+      .select({
+        id: service.id,
+        name: service.name,
+        unitPriceList: service.unitPriceList,
+        unitPriceCash: service.unitPriceCash,
+      })
+      .from(service)
+      .where(eq(service.isActive, true))
+      .orderBy(asc(service.name)),
+    leerConfig(db),
+  ]);
+
+  const global = {
+    sesiones: config.packSesiones,
+    descuentoPct: config.packDescuentoPct,
+    redondeo: config.packRedondeo,
+  };
+
+  return {
+    combos: genericos
+      .filter((c) => (c as ComboArmado).isActive !== false)
+      .map((c) => aItemDeCatalogo(comboVendible(c as ComboArmado))),
+    depilacion: depilacion
+      .filter((c) => c.isActive)
+      .map((c) =>
+        aItemDeCatalogo({
+          origen: "depilacion",
+          id: c.id,
+          nombre: c.name,
+          unitario: c.precioFinal,
+          politica: { sesiones: c.pack.sesiones, descuentoPct: c.pack.descuentoPct, redondeo: c.pack.redondeo },
+        }),
+      ),
+    servicios: servicios.map((s) =>
+      aItemDeCatalogo({
+        origen: "servicio",
+        id: s.id,
+        nombre: s.name ?? "Sin nombre",
+        unitario: precioDeServicio(s.unitPriceList, s.unitPriceCash),
+        politica: global,
+      }),
+    ),
+  };
+}
+
+/**
+ * Un solo item, para cotizar sin traerse el catálogo entero.
+ *
+ * Devuelve `null` si no existe: el que llama decide si eso es un 404.
+ */
+export async function obtenerItemVendible(
+  db: Db,
+  origen: ItemVendible["origen"],
+  id: string,
+): Promise<ItemVendible | null> {
+  if (origen === "combo") {
+    const c = await getComboById(db, id);
+    if (!c) return null;
+    return comboVendible(c as ComboArmado);
+  }
+
+  if (origen === "depilacion") {
+    const c = await obtenerCombo(db, id);
+    if (!c) return null;
+    return {
+      origen: "depilacion",
+      id: c.id,
+      nombre: c.name,
+      unitario: c.precioFinal,
+      politica: {
+        sesiones: c.pack.sesiones,
+        descuentoPct: c.pack.descuentoPct,
+        redondeo: c.pack.redondeo,
+      },
+    };
+  }
+
+  const [s] = await db
+    .select({
+      id: service.id,
+      name: service.name,
+      unitPriceList: service.unitPriceList,
+      unitPriceCash: service.unitPriceCash,
+    })
+    .from(service)
+    .where(eq(service.id, id))
+    .limit(1);
+  if (!s) return null;
+
+  const config = await leerConfig(db);
+  return {
+    origen: "servicio",
+    id: s.id,
+    nombre: s.name ?? "Sin nombre",
+    unitario: precioDeServicio(s.unitPriceList, s.unitPriceCash),
+    politica: {
+      sesiones: config.packSesiones,
+      descuentoPct: config.packDescuentoPct,
+      redondeo: config.packRedondeo,
+    },
+  };
+}
+
+/**
+ * Las promos que hoy se pueden aplicar a una venta.
+ *
+ * Mismo criterio de vigencia que `listActivePromotions` —fecha LOCAL, no UTC,
+ * o una promo que vence hoy desaparece tres horas antes— pero sin armar los
+ * servicios de cada una: para cotizar sólo hacen falta los dos descuentos.
+ */
+export async function listPromosVendibles(db: Db): Promise<PromoVendible[]> {
+  const hoy = todayLocal();
+  const filas = await db
+    .select({
+      id: promotions.id,
+      name: promotions.name,
+      discountPercentage: promotions.discountPercentage,
+      discountAmount: promotions.discountAmount,
+    })
+    .from(promotions)
+    .where(
+      and(
+        eq(promotions.status, "active"),
+        or(isNull(promotions.validUntil), sql`${promotions.validUntil} >= ${hoy}::date`),
+      ),
+    )
+    .orderBy(asc(promotions.name));
+
+  return filas.map((p) => ({
+    id: p.id,
+    name: p.name,
+    discountPercentage: num(p.discountPercentage),
+    discountAmount: num(p.discountAmount),
+  }));
+}
+
+/** Una promo por id, para cotizar. `null` si no existe o no está vigente. */
+export async function obtenerPromoVendible(db: Db, id: string): Promise<PromoVendible | null> {
+  const todas = await listPromosVendibles(db);
+  return todas.find((p) => p.id === id) ?? null;
+}
