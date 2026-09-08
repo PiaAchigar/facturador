@@ -329,6 +329,23 @@ export const appointmentReschedule = pgTable("appointment_reschedule", {
   createdAt: createdAt(),
 });
 
+/**
+ * Lo que consumió cada turno (1.44.0).
+ *
+ * `service_product` dice lo que un servicio DEBERÍA consumir hoy y cambia
+ * cuando se edita la receta. Esto dice lo que ese turno consumió, y no cambia
+ * nunca. El único por (appointment_id, product_id) es además lo que impide
+ * descontar dos veces el mismo turno.
+ */
+export const appointmentProductConsumption = pgTable("appointment_product_consumption", {
+  id: id(),
+  appointmentId: uuid("appointment_id"),
+  productId: uuid("product_id"),
+  quantity: decimal("quantity", { precision: 10, scale: 3 }),
+  stockAfter: decimal("stock_after", { precision: 10, scale: 3 }),
+  createdAt: createdAt(),
+});
+
 export const openHours = pgTable("open_hours", {
   id: id(),
   dayOfWeek: integer("day_of_week"), // 0=domingo ... 6=sábado

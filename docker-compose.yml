@@ -57,6 +57,7 @@ services:
       - ./src/db/migrations/1.40.0/01-historial-reagendamientos.sql:/docker-entrypoint-initdb.d/39f-historial-reagendamientos.sql:ro
       - ./src/db/migrations/1.41.0/01-insumos.sql:/docker-entrypoint-initdb.d/39g-insumos.sql:ro
       - ./src/db/migrations/1.43.0/01-recetas.sql:/docker-entrypoint-initdb.d/39h-recetas.sql:ro
+      - ./src/db/migrations/1.44.0/01-consumo-de-insumos.sql:/docker-entrypoint-initdb.d/39i-consumo-de-insumos.sql:ro
       #
       # Acá arriba van SÓLO las migraciones de ESQUEMA. Las de DATOS no se
       # montan y no es un olvido: traen UUIDs de producción hardcodeados y

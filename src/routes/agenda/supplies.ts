@@ -21,14 +21,20 @@ const suppliesRouter = new Hono<{ Bindings: AppBindings; Variables: Variables }>
  * compara "5000" > 0 y muestra cualquier cosa. `nivel` se calcula acá para que
  * la pantalla y cualquier futuro aviso usen exactamente el mismo criterio.
  */
-function serialize<T extends { unitCost?: unknown; unitPrice?: unknown; quantityInStock?: number | null; minimumStock?: number | null }>(
-  s: T,
-) {
+function serialize<T extends {
+  unitCost?: unknown;
+  unitPrice?: unknown;
+  quantityInStock?: unknown;
+  minimumStock?: number | null;
+}>(s: T) {
+  // `quantityInStock` es numeric desde la 1.44.0, así que también llega string.
+  const stock = s.quantityInStock != null ? Number(s.quantityInStock) : null;
   return {
     ...s,
     unitCost: s.unitCost != null ? Number(s.unitCost) : null,
     unitPrice: s.unitPrice != null ? Number(s.unitPrice) : null,
-    nivel: nivelDeStock(s.quantityInStock, s.minimumStock),
+    quantityInStock: stock,
+    nivel: nivelDeStock(stock, s.minimumStock),
   };
 }
 
@@ -52,7 +58,7 @@ const supplyBody = z.object({
   unitType: z.string().max(50).nullish(),
   // El stock admite negativos a propósito: al completar un servicio se descuenta
   // aunque no alcance (decisión de Laura, 2026-09-08).
-  quantityInStock: z.number().int().nullish(),
+  quantityInStock: z.number().nullish(),
   minimumStock: z.number().int().nonnegative().nullish(),
   unitCost: z.number().nonnegative().nullish(),
   unitPrice: z.number().nonnegative().nullish(),

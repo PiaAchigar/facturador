@@ -20,6 +20,7 @@ import { cancelDeal, getDealByAppointmentId } from "../repositories/deals.repo";
 import { getActiveAgreement } from "../repositories/providers.repo";
 import { getServiceById } from "../repositories/services.repo";
 import { loadAvailabilityContext } from "./availability.service";
+import { consumirInsumos } from "./consumo.service";
 import { registerDeposit, type DepositInput } from "./deposits.service";
 import type { ArcaConfig } from "../arca/factory";
 
@@ -181,6 +182,10 @@ export async function updateAppointmentStatus(
   /** Seña a devolver como saldo a favor al cancelar (null = no hay nada que acreditar). */
   let dealToCancel: { id: string; amount: number; customerId: string } | null = null;
 
+  /** Sólo la TRANSICIÓN descuenta insumos. Volver a mandar 'completed' sobre un
+   *  turno ya completado no descuenta de nuevo. */
+  const completando = changes.status === "completed" && appt.status !== "completed";
+
   if (changes.status) {
     if (!VALID_STATUSES.includes(changes.status)) throw badRequest("Estado inválido");
     if (appt.status === "completed" && changes.status !== "completed") {
@@ -194,7 +199,7 @@ export async function updateAppointmentStatus(
     }
 
     // Al completar se congela el snapshot de pago a la proveedora
-    if (changes.status === "completed" && appt.status !== "completed") {
+    if (completando) {
       const snapshot = await computeProviderEarning(db, appt);
       Object.assign(values, snapshot);
     }
@@ -220,6 +225,18 @@ export async function updateAppointmentStatus(
         };
       }
     }
+  }
+
+  // Al completar, el turno y el descuento de insumos pasan JUNTOS o no pasa
+  // ninguno: si el turno quedara completado y el descuento fallara, el stock
+  // mentiría para siempre y nadie se enteraría. `consumo` viaja al front para
+  // avisar si algún insumo quedó en negativo — no frena nada.
+  if (completando) {
+    return db.transaction(async (tx) => {
+      const updated = await updateAppointment(tx, id, values);
+      const consumo = await consumirInsumos(tx, id, appt.serviceId);
+      return { ...updated, consumo };
+    });
   }
 
   if (!dealToCancel) return updateAppointment(db, id, values);

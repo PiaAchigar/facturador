@@ -57,13 +57,20 @@ export type SupplyInput = {
   taxCategory?: string | null;
 };
 
-/** Los `numeric` de la base los quiere Drizzle como string. */
+/**
+ * Los `numeric` de la base los quiere Drizzle como string.
+ *
+ * `quantityInStock` entró a la lista en la 1.44.0: dejó de ser integer porque
+ * las recetas consumen fracciones.
+ */
 function aColumnas(p: Partial<SupplyInput>) {
-  const { unitCost, unitPrice, ...resto } = p;
+  const { unitCost, unitPrice, quantityInStock, ...resto } = p;
+  const dec = (v: number | null) => (v === null ? null : String(v));
   return {
     ...resto,
-    ...(unitCost !== undefined && { unitCost: unitCost === null ? null : String(unitCost) }),
-    ...(unitPrice !== undefined && { unitPrice: unitPrice === null ? null : String(unitPrice) }),
+    ...(unitCost !== undefined && { unitCost: dec(unitCost) }),
+    ...(unitPrice !== undefined && { unitPrice: dec(unitPrice) }),
+    ...(quantityInStock !== undefined && { quantityInStock: dec(quantityInStock) }),
   };
 }
 

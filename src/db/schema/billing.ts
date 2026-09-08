@@ -140,7 +140,9 @@ export const products = pgTable("products", {
   description: varchar("description", { length: 255 }),
   code: varchar("code", { length: 50 }),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }),
-  quantityInStock: integer("quantity_in_stock"),
+  // numeric(10,3) desde la 1.44.0: las recetas consumen fracciones (media
+  // ampolla) y con integer el stock se iría desviando en cada servicio.
+  quantityInStock: decimal("quantity_in_stock", { precision: 10, scale: 3 }),
   unitType: varchar("unit_type", { length: 50 }),
   taxCategory: varchar("tax_category", { length: 50 }),
   supplierInfo: text("supplier_info"),
