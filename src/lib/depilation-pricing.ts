@@ -24,7 +24,12 @@ export type DepilationConfig = {
  * guardado. Laura vende algunos combos en 3 sesiones y otros en 5, con
  * descuentos distintos, y eso no entra en una sola fila de configuración.
  */
-export type PackPolitica = { sesiones: number; descuentoPct: number; redondeo: number };
+// PackPolitica, politicaDePack y calcularPrecioPack se mudaron a
+// `pack-pricing.ts`: dejaron de ser de depilación cuando los packs pasaron a
+// existir para cualquier combo. Se re-exportan para no tocar a quien ya los
+// importaba desde acá, y `calcularPrecioPack` conserva su nombre viejo.
+export type { PackPolitica } from "./pack-pricing";
+export { politicaDePack, precioPack as calcularPrecioPack } from "./pack-pricing";
 
 export type MotivoPrecio = "lista" | "escalon_1" | "escalon_2";
 
@@ -104,43 +109,6 @@ export function calcularDuracionTurno(
   const suma = zonas.reduce((acc, z) => acc + config.minutosTurno[sexo][z.categoria], 0);
   const redondeado = Math.round(suma / config.redondeoTurno) * config.redondeoTurno;
   return Math.max(config.turnoMinimo, redondeado);
-}
-
-/**
- * Qué pack corre: el propio del combo si lo tiene, la política global si no.
- *
- * `propia` viene de las columnas de `depilation_combo`, que son nullables y
- * van de a tres (o las tres cargadas, o ninguna — lo garantiza un CHECK). Una
- * cotización armada al vuelo no tiene combo, así que siempre cae en la global.
- */
-export function politicaDePack(
-  config: DepilationConfig,
-  propia?: PackPolitica | null,
-): PackPolitica {
-  return (
-    propia ?? {
-      sesiones: config.packSesiones,
-      descuentoPct: config.packDescuentoPct,
-      redondeo: config.packRedondeo,
-    }
-  );
-}
-
-/**
- * Precio del pack de N sesiones (PDF §7).
- *
- * Se redondea UNA SOLA VEZ, al final. El PDF lo marca en mayúsculas: si se
- * redondea el descuento o cada sesión por separado, los números no cierran.
- */
-export function calcularPrecioPack(
-  totalCombo: number,
-  config: DepilationConfig,
-  propia?: PackPolitica | null,
-): number {
-  const pack = politicaDePack(config, propia);
-  // Entero antes de dividir: `× 0,85` en coma flotante da 45900.000000000007.
-  const bruto = (totalCombo * pack.sesiones * (100 - pack.descuentoPct)) / 100;
-  return Math.round(bruto / pack.redondeo) * pack.redondeo;
 }
 
 /**
