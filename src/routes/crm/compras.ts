@@ -1,0 +1,102 @@
+import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import { createDb } from "../../db/client";
+import { badRequest, notFound } from "../../lib/errors";
+import { auth, requireAuth, requirePermission } from "../../middleware/auth";
+import { cancelCompra, createCompra, listComprasDeCliente } from "../../repositories/compras.repo";
+import type { AppBindings, Variables } from "../../env";
+
+const comprasRouter = new Hono<{ Bindings: AppBindings; Variables: Variables }>();
+
+/**
+ * Las compras de una clienta: qué adquirió, cuánto pagó, cuánto debe y en qué
+ * estado está cada sesión. Alimenta la card "Compras del Cliente".
+ */
+comprasRouter.get(
+  "/customers/:id/purchases",
+  auth,
+  requireAuth,
+  requirePermission("crm", "view"),
+  async (c) => {
+    const db = createDb(c.env);
+    return c.json(await listComprasDeCliente(db, c.req.param("id")));
+  },
+);
+
+/**
+ * Vende.
+ *
+ * Los tres montos llegan YA CALCULADOS y acá se congelan. El motor
+ * (`lib/pack-pricing.ts`) corre del lado de quien vende, que es el que sabe
+ * qué promo eligió Laura y qué política de pack corre; el backend guarda el
+ * precio, nunca la fórmula que lo produjo. Eso es lo que hace que la venta
+ * sobreviva a cualquier cambio de precios o de motor.
+ */
+const compraBody = z
+  .object({
+    customerId: z.string().uuid(),
+    comboId: z.string().uuid().nullish(),
+    serviceId: z.string().uuid().nullish(),
+    depilationComboId: z.string().uuid().nullish(),
+    description: z.string().min(1).max(200),
+    sessionsTotal: z.number().int().positive(),
+    baseAmount: z.number().nonnegative(),
+    discountedAmount: z.number().nonnegative(),
+    finalAmount: z.number().nonnegative(),
+    promotionId: z.string().uuid().nullish(),
+    expiresAt: z.string().datetime({ offset: true }).nullish(),
+    notes: z.string().max(2000).nullish(),
+  })
+  .refine(
+    (v) => [v.comboId, v.serviceId, v.depilationComboId].filter(Boolean).length === 1,
+    { message: "Una compra tiene exactamente un origen: combo, servicio o combo de depilación" },
+  )
+  .refine((v) => v.finalAmount <= v.discountedAmount && v.discountedAmount <= v.baseAmount, {
+    // Los tres montos son las tres capas en orden. Si vinieran desordenados,
+    // la card mostraría un "descuento" que en realidad es un recargo.
+    message: "Los montos tienen que ir de mayor a menor: base ≥ con descuento ≥ final",
+  });
+
+comprasRouter.post(
+  "/purchases",
+  auth,
+  requireAuth,
+  requirePermission("crm", "edit"),
+  zValidator("json", compraBody),
+  async (c) => {
+    const db = createDb(c.env);
+    const b = c.req.valid("json");
+    try {
+      const compra = await createCompra(db, {
+        ...b,
+        expiresAt: b.expiresAt ? new Date(b.expiresAt) : null,
+      });
+      return c.json(compra, 201);
+    } catch (e) {
+      throw badRequest((e as Error).message);
+    }
+  },
+);
+
+/**
+ * Cancela una compra. No borra: puede tener pagos y facturas colgando, y una
+ * venta cancelada sigue siendo parte de la historia de la clienta.
+ */
+comprasRouter.post(
+  "/purchases/:id/cancel",
+  auth,
+  requireAuth,
+  requirePermission("crm", "edit"),
+  zValidator("json", z.object({ reason: z.string().max(500).nullish() }).optional()),
+  async (c) => {
+    const db = createDb(c.env);
+    const cancelada = await cancelCompra(db, c.req.param("id"), c.req.valid("json")?.reason);
+    // null = no existe, o ya estaba cancelada. Las dos son "no hay nada que
+    // cancelar acá"; distinguirlas no le cambia nada a quien lo pide.
+    if (!cancelada) throw notFound("Compra");
+    return c.json(cancelada);
+  },
+);
+
+export { comprasRouter };

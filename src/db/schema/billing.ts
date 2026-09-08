@@ -72,6 +72,9 @@ export const lineItems = pgTable("line_items", {
   serviceId: uuid("service_id"),
   productId: uuid("product_id"),
   trainingEnrollmentId: uuid("training_enrollment_id"),
+  /** Compra que factura esta línea (1.45.0). Una compra puede tener VARIAS
+   *  facturas, así que el vínculo vive acá y no en `customer_purchase`. */
+  customerPurchaseId: uuid("customer_purchase_id"),
   quantity: integer("quantity"),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }), // snapshot al momento de la venta
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }),
@@ -100,6 +103,9 @@ export const payments = pgTable("payments", {
   // Turno cobrado en este pago (si vino de un checkout con appointmentId) — permite
   // mostrar en caja cuánto de este cobro es la comisión de la proveedora.
   appointmentId: uuid("appointment_id"),
+  /** Compra que paga este cobro (1.45.0). Con esto el saldo tiene UNA sola
+   *  definición: final_amount − Σ amount de los pagos confirmados. */
+  customerPurchaseId: uuid("customer_purchase_id"),
   confirmedByUserId: uuid("confirmed_by_user_id"),
   confirmedAt: timestamp("confirmed_at"),
   createdAt: createdAt(),
@@ -177,4 +183,78 @@ export const mercadopagoAccounts = pgTable("mercadopago_accounts", {
   status: varchar("status", { length: 50 }), // active | inactive | pending_verification
   createdAt: createdAt(),
   updatedAt: updatedAt(),
+});
+
+/**
+ * Lo que la clienta compró (1.45.0): un pack, un combo o un servicio suelto que
+ * queda pendiente de pagar o de consumir.
+ *
+ * Se distingue del checkout de mostrador por una sola pregunta: ¿queda algo
+ * pendiente cuando la clienta se va? (decisión de Pia, 2026-09-08).
+ *
+ * `description` va CONGELADA: si mañana se renombra el combo, la venta de
+ * agosto tiene que seguir diciendo qué se vendió. El FK sirve para trazar; el
+ * texto, para leer. Y no hay `invoiceId` porque una compra puede tener VARIAS
+ * facturas — el vínculo va por `lineItems.customerPurchaseId`.
+ */
+export const customerPurchase = pgTable("customer_purchase", {
+  id: id(),
+  customerId: uuid("customer_id"),
+  comboId: uuid("combo_id"),
+  serviceId: uuid("service_id"),
+  depilationComboId: uuid("depilation_combo_id"),
+  description: varchar("description", { length: 200 }),
+  sessionsTotal: integer("sessions_total"),
+  baseAmount: decimal("base_amount", { precision: 10, scale: 2 }),
+  discountedAmount: decimal("discounted_amount", { precision: 10, scale: 2 }),
+  promotionId: uuid("promotion_id"),
+  finalAmount: decimal("final_amount", { precision: 10, scale: 2 }),
+  purchasedAt: timestamp("purchased_at"),
+  expiresAt: timestamp("expires_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  notes: text("notes"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Una sesión de una compra. SIN columna de estado: se deriva de `consumedAt`,
+ * `appointmentId` y la vigencia de la compra (ver `lib/compras.ts`), así que no
+ * puede desincronizarse. Un turno cancelado devuelve la sesión a disponible
+ * sin que nadie escriba nada.
+ */
+export const customerPurchaseSession = pgTable("customer_purchase_session", {
+  id: id(),
+  customerPurchaseId: uuid("customer_purchase_id"),
+  sessionNumber: integer("session_number"),
+  appointmentId: uuid("appointment_id"),
+  consumedAt: timestamp("consumed_at"),
+  notes: text("notes"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/** Qué se eligió en una sesión de un combo "a elección". Los fijos no la usan. */
+export const customerPurchaseSessionService = pgTable("customer_purchase_session_service", {
+  id: id(),
+  sessionId: uuid("session_id"),
+  serviceId: uuid("service_id"),
+  minutes: integer("minutes"),
+  createdAt: createdAt(),
+});
+
+/**
+ * A qué le aplica una promo (1.45.0): servicio, zona de depilación, combo o
+ * combo de depilación. Combo y pack comparten columna a propósito — un pack de
+ * catálogo ES una fila de `combos`; la diferencia está en los datos de esa
+ * fila, no en a qué tabla pertenece.
+ */
+export const promotionTarget = pgTable("promotion_target", {
+  id: id(),
+  promotionId: uuid("promotion_id"),
+  serviceId: uuid("service_id"),
+  bodyZoneId: uuid("body_zone_id"),
+  comboId: uuid("combo_id"),
+  depilationComboId: uuid("depilation_combo_id"),
+  createdAt: createdAt(),
 });
