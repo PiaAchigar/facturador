@@ -51,17 +51,30 @@ services:
       - ./src/db/migrations/1.32.0/01-limpiar-markdown-servicios.sql:/docker-entrypoint-initdb.d/38-limpiar-markdown-servicios.sql:ro
       - ./src/db/migrations/1.33.0/01-reparar-fechas-nacimiento.sql:/docker-entrypoint-initdb.d/39-reparar-fechas-nacimiento.sql:ro
       - ./src/db/migrations/1.35.0/01-depilacion-zonas.sql:/docker-entrypoint-initdb.d/39b-depilacion-zonas.sql:ro
+      - ./src/db/migrations/1.36.0/01-pack-por-combo.sql:/docker-entrypoint-initdb.d/39c-pack-por-combo.sql:ro
+      - ./src/db/migrations/1.37.0/01-ejes-catalogo.sql:/docker-entrypoint-initdb.d/39d-ejes-catalogo.sql:ro
+      - ./src/db/migrations/1.39.0/01-reconciliar-esquema.sql:/docker-entrypoint-initdb.d/39e-reconciliar-esquema.sql:ro
       #
-      # Las que faltan de 1.26.0 (01-dedupe, 02-restructure, 03-eje-corporal,
-      # 04-eje-dermatologia, 05-limpieza-eje, 07-archivar-eje-viejo,
-      # 08-cosmetologia-facial), 1.28.0 y 1.29.0 NO se montan y no es un olvido:
-      # son migraciones de DATOS que traen UUIDs de producción hardcodeados.
-      # Contra una base recién creada fallan con
+      # Acá arriba van SÓLO las migraciones de ESQUEMA. Las de DATOS no se
+      # montan y no es un olvido: traen UUIDs de producción hardcodeados y
+      # contra una base recién creada fallan con
       #   ERROR: insert or update on table "categories" violates foreign key
       #          constraint "fk_cat_parent"
       # y ahí el entrypoint de Postgres aborta, dejando la base a medio armar
-      # (sin `combos`, entre otras). Si alguna vez hacen falta en local, hay que
-      # reescribirlas resolviendo las categorías por nombre en vez de por id.
+      # (sin `combos`, entre otras).
+      #
+      # Las que quedan afuera por eso: 1.26.0/01-dedupe, 02-restructure,
+      # 03-eje-corporal, 04-eje-dermatologia, 05-limpieza-eje,
+      # 07-archivar-eje-viejo, 08-cosmetologia-facial, 1.28.0, 1.29.0,
+      # 1.34.0, 1.37.0/02 y /03, y 1.38.0/01.
+      #
+      # El catálogo real NO sale de correr esas migraciones: se copia de
+      # producción a la base local con `scripts/traer-catalogo.sh`, que trae el
+      # resultado ya cocinado. Por eso alcanza con que el ESQUEMA esté al día.
+      #
+      # 1.4.0/rag-infrastructure.sql tampoco se monta: sus columnas y tablas ya
+      # las crean 1.17.0, 1.18.0 y 1.19.0, que sí están acá.
+      # 1.38.0/00-backup.sql es una red para producción, en local no hace falta.
       #
       # Cada migración de ESQUEMA nueva se agrega acá arriba; el seed va último
       # porque Postgres corre /docker-entrypoint-initdb.d en orden alfabético.
