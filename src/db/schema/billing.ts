@@ -145,6 +145,17 @@ export const products = pgTable("products", {
   taxCategory: varchar("tax_category", { length: 50 }),
   supplierInfo: text("supplier_info"),
   isActive: boolean("is_active"),
+  // ── Insumos (1.41.0) ──────────────────────────────────────────────────────
+  // `unit_price` es a cuánto se VENDE (lo lee invoicing.service para facturar);
+  // `unitCost` es lo que CUESTA, que es lo que se usa para costear tratamientos.
+  // Son dos números distintos y meterlos en la misma columna facturaría los
+  // insumos al precio de compra.
+  unitCost: decimal("unit_cost", { precision: 10, scale: 2 }),
+  /** Unidades a partir de las cuales avisar. NULL o 0 = "no me avises". */
+  minimumStock: integer("minimum_stock"),
+  /** true = se consume haciendo un servicio. Separa los insumos de los
+   *  productos vendibles: `line_items.product_id` referencia esta misma tabla. */
+  isSupply: boolean("is_supply"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

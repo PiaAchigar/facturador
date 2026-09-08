@@ -10,6 +10,7 @@ import { depilacionRouter } from "./depilacion";
 import { faqRouter } from "./faq";
 import { machinesRouter } from "./machines";
 import { promotionsRouter } from "./promotions";
+import { suppliesRouter } from "./supplies";
 import { providersRouter, services } from "./services";
 import { trainings } from "./trainings";
 import { webRouter } from "./web";
@@ -30,6 +31,7 @@ agenda.route("/combos", combosRouter);
 agenda.route("/depilacion", depilacionRouter);
 agenda.route("/trainings", trainings);
 agenda.route("/machines", machinesRouter);
+agenda.route("/supplies", suppliesRouter);
 agenda.route("/web", webRouter);
 agenda.route("/faq", faqRouter);
 
