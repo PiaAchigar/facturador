@@ -108,11 +108,13 @@ categoriesRouter.patch(
   },
 );
 
-// Archivar (soft-delete) — solo admin.
+// Archivar (soft-delete) — solo admin. Un área no se archiva: su pestaña del
+// panel quedaría vacía y desaparecería del modal de Nuevo Servicio.
 categoriesRouter.delete("/:id", auth, requireAuth, requirePermission("catalogo", "manage"), async (c) => {
   const db = createDb(c.env);
   const archived = await setCategoryActive(db, c.req.param("id"), false);
   if (!archived) throw notFound("Category");
+  if ("blocked" in archived) throw badRequest(archived.blocked);
   return c.json(archived);
 });
 
@@ -134,7 +136,8 @@ categoriesRouter.get("/:id/delete-impact", auth, requireAuth, requireAdmin, asyn
 });
 
 // Hard-delete real (no el archivado de DELETE /:id). Solo admin. Se bloquea si
-// la categoría tiene subcategorías o si todavía está activa.
+// la categoría tiene subcategorías, si todavía está activa, o si es un área del
+// panel (esas no se borran nunca: `admin-nav.ts` las referencia por nombre).
 categoriesRouter.delete("/:id/permanent", auth, requireAuth, requireAdmin, async (c) => {
   const db = createDb(c.env);
   const id = c.req.param("id");

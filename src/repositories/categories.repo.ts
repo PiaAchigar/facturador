@@ -1,6 +1,7 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { categories, serviceCategory } from "../db/schema";
+import { razonesParaNoArchivar, razonesParaNoBorrar } from "../lib/categorias-borrado";
 
 const categoryFields = {
   id: categories.id,
@@ -89,7 +90,22 @@ export async function updateCategory(
 }
 
 /** Soft-delete / restore: nunca borra, solo cambia `is_active` (regla 1.3). */
+/**
+ * Archiva o restaura. Archivar un área está prohibido: su pestaña del panel
+ * quedaría vacía y desaparecería del modal de Nuevo Servicio, que es lo que
+ * pasó con "Estética". Restaurar nunca se bloquea.
+ *
+ * Devuelve `{ blocked }` en vez de tirar, para que la ruta arme la respuesta.
+ */
 export async function setCategoryActive(db: Db, id: string, isActive: boolean) {
+  if (!isActive) {
+    const cat = await getCategoryById(db, id);
+    if (cat) {
+      const motivos = razonesParaNoArchivar(cat);
+      if (motivos.length > 0) return { blocked: `No se puede archivar: ${motivos[0]}.` } as const;
+    }
+  }
+
   const rows = await db
     .update(categories)
     .set({ isActive })
@@ -126,13 +142,7 @@ export async function getCategoryDeleteImpact(db: Db, id: string) {
       .where(eq(serviceCategory.categoryId, id)),
   ]);
 
-  const motivos: string[] = [];
-  if (hijas.length > 0) {
-    motivos.push(
-      `tiene ${hijas.length} subcategoría(s) colgando (eliminalas o movelas a otra madre primero)`,
-    );
-  }
-  if (cat?.isActive) motivos.push("está activa (archivala primero)");
+  const motivos = cat ? razonesParaNoBorrar(cat, hijas.length) : [];
 
   return {
     blocked: motivos.length > 0,
