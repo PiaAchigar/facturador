@@ -141,6 +141,8 @@ export type CreditMovementReason =
   | "purchase_cancelled"
   /** Se usó el saldo para comprar otro pack/combo/servicio. */
   | "purchase_paid_with_credit"
+  /** Se le devolvió la plata en mano y salió de la caja. */
+  | "refunded"
   | "deposit_paid_with_credit"
   | "manual_adjustment";
 
@@ -148,6 +150,7 @@ type CreditContext = {
   reason: CreditMovementReason;
   appointmentId?: string | null;
   paymentId?: string | null;
+  customerPurchaseId?: string | null;
   notes?: string | null;
 };
 
@@ -202,6 +205,7 @@ async function insertCreditMovement(
     reason: ctx.reason,
     appointmentId: ctx.appointmentId ?? null,
     paymentId: ctx.paymentId ?? null,
+    customerPurchaseId: ctx.customerPurchaseId ?? null,
     notes: ctx.notes ?? null,
   });
 }

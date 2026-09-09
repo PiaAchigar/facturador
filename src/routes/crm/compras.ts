@@ -3,15 +3,18 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createDb } from "../../db/client";
 import { badRequest, notFound } from "../../lib/errors";
-import { auth, requireAuth, requirePermission } from "../../middleware/auth";
+import { auth, requireAdmin, requireAuth, requirePermission } from "../../middleware/auth";
 import {
   cancelCompra,
   createCompra,
   deleteCompraPermanently,
+  devolverPlataDeCompra,
   getCompraById,
   getCompraDeleteImpact,
+  getEstadoDeDevolucion,
   listComprasDeCliente,
 } from "../../repositories/compras.repo";
+import { montoADevolver, razonesParaNoDevolver } from "../../lib/devolucion";
 import { razonesParaNoBorrarCompra } from "../../lib/compra-borrado";
 import {
   listCatalogoVendible,
@@ -239,6 +242,63 @@ comprasRouter.delete(
       throw badRequest(`No se puede eliminar esta compra porque ${motivos.join(", ")}.`);
     }
     return c.body(null, 204);
+  },
+);
+
+/**
+ * Si a esta compra se le puede devolver la plata, cuánta, y si no por qué.
+ * Lo consulta el cartel antes de ofrecer nada.
+ */
+comprasRouter.get(
+  "/purchases/:id/refund-check",
+  auth,
+  requireAuth,
+  requirePermission("crm", "view"),
+  async (c) => {
+    const db = createDb(c.env);
+    const estado = await getEstadoDeDevolucion(db, c.req.param("id"));
+    if (!estado) throw notFound("Compra");
+
+    const motivos = razonesParaNoDevolver(estado);
+    return c.json({
+      ...estado,
+      motivos,
+      sePuede: motivos.length === 0,
+      monto: motivos.length === 0 ? montoADevolver(estado) : 0,
+    });
+  },
+);
+
+/**
+ * Devuelve la plata en mano: baja el saldo a favor y la resta de la caja del
+ * día, en una sola transacción.
+ *
+ * **Sólo admin**, a diferencia de vender y cancelar (decisión de Pia,
+ * 2026-09-09): es la única acción de todo el flujo que saca plata del local.
+ *
+ * Es el último recurso. Lo primero que se le ofrece a la clienta es usar el
+ * saldo en otro tratamiento, y para eso no hace falta pasar por acá.
+ */
+comprasRouter.post(
+  "/purchases/:id/refund",
+  auth,
+  requireAuth,
+  requireAdmin,
+  zValidator("json", z.object({ notes: z.string().max(500).nullish() }).optional()),
+  async (c) => {
+    const db = createDb(c.env);
+    const id = c.req.param("id");
+    const compra = await getCompraById(db, id);
+    if (!compra) throw notFound("Compra");
+
+    const { motivos, monto } = await devolverPlataDeCompra(db, id, {
+      descripcion: compra.description ?? "una compra",
+      notas: c.req.valid("json")?.notes,
+    });
+    if (motivos.length > 0) {
+      throw badRequest(`No se puede devolver la plata porque ${motivos.join(", ")}.`);
+    }
+    return c.json({ monto });
   },
 );
 

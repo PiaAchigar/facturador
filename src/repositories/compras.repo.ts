@@ -2,6 +2,8 @@ import { and, count, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizz
 import type { Db } from "../db/client";
 import {
   appointments,
+  cashRegister,
+  customerCreditMovements,
   customerPurchase,
   customerPurchaseSession,
   lineItems,
@@ -12,6 +14,11 @@ import { estadoDeSesion, resumenDeCompra, type EstadoSesion } from "../lib/compr
 import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-borrado";
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
 import { planDePagoConSaldo } from "../lib/pago-con-saldo";
+import {
+  montoADevolver,
+  razonesParaNoDevolver,
+  type CompraParaDevolver,
+} from "../lib/devolucion";
 import { creditCustomer, debitCustomerCredit, getCustomerById } from "./customers.repo";
 
 const compraFields = {
@@ -151,6 +158,7 @@ async function aplicarSaldoAFavor(tx: Db, compraId: string, input: CompraInput):
   const ok = await debitCustomerCredit(tx, input.customerId, plan.conSaldo, {
     reason: "purchase_paid_with_credit",
     paymentId: pago?.id ?? null,
+    customerPurchaseId: compraId,
     notes: `Compra de "${input.description}"`,
   });
   if (!ok) throw new Error("El saldo a favor de la clienta no alcanza para esta compra");
@@ -319,6 +327,7 @@ async function acreditarSobranteDeCompra(
 
   await creditCustomer(tx, compra.customerId, monto, {
     reason: "purchase_cancelled",
+    customerPurchaseId: compra.id,
     notes: `Cancelación de "${(compra as { description?: string | null }).description ?? "una compra"}"`,
   });
   return monto;
@@ -397,4 +406,124 @@ export async function getCompraById(db: Db, id: string) {
     .where(eq(customerPurchase.id, id))
     .limit(1);
   return fila ?? null;
+}
+
+/**
+ * El estado de una compra frente a la devolución: qué se pagó, qué se usó y
+ * cuánto saldo le queda hoy a la clienta.
+ */
+export async function getEstadoDeDevolucion(db: Db, id: string): Promise<CompraParaDevolver | null> {
+  const [compra] = await db
+    .select({
+      id: customerPurchase.id,
+      customerId: customerPurchase.customerId,
+      finalAmount: customerPurchase.finalAmount,
+      sessionsTotal: customerPurchase.sessionsTotal,
+      cancelledAt: customerPurchase.cancelledAt,
+    })
+    .from(customerPurchase)
+    .where(eq(customerPurchase.id, id))
+    .limit(1);
+  if (!compra) return null;
+
+  const [cobrado, usadas, devuelta, cliente] = await Promise.all([
+    db
+      .select({ total: sql<string>`coalesce(sum(${payments.amount}), 0)` })
+      .from(payments)
+      .where(and(eq(payments.customerPurchaseId, id), eq(payments.status, "confirmed"))),
+    db
+      .select({
+        total: sql<number>`count(*) filter (
+          where ${customerPurchaseSession.consumedAt} is not null
+             or ${appointments.status} = 'no_show'
+        )`,
+      })
+      .from(customerPurchaseSession)
+      .leftJoin(appointments, eq(appointments.id, customerPurchaseSession.appointmentId))
+      .where(eq(customerPurchaseSession.customerPurchaseId, id)),
+    db
+      .select({ n: count() })
+      .from(customerCreditMovements)
+      .where(
+        and(
+          eq(customerCreditMovements.customerPurchaseId, id),
+          eq(customerCreditMovements.reason, "refunded"),
+        ),
+      ),
+    compra.customerId ? getCustomerById(db, compra.customerId) : Promise.resolve(null),
+  ]);
+
+  return {
+    cancelada: compra.cancelledAt != null,
+    pagado: Number(cobrado[0]?.total ?? 0),
+    finalAmount: Number(compra.finalAmount ?? 0),
+    sessionsTotal: compra.sessionsTotal ?? 0,
+    usadas: Number(usadas[0]?.total ?? 0),
+    saldoDisponible: Number(cliente?.creditBalance ?? 0),
+    yaDevuelta: Number(devuelta[0]?.n ?? 0) > 0,
+  };
+}
+
+/**
+ * Devuelve la plata en mano: baja el saldo a favor y la resta de la caja del
+ * día, **en una sola transacción**.
+ *
+ * Las dos cosas juntas o ninguna. Si se bajara el saldo sin tocar la caja, la
+ * rendición del día cerraría con plata que ya no está; al revés, la clienta
+ * seguiría teniendo a favor una plata que ya se llevó.
+ *
+ * Vuelve a evaluar las condiciones acá aunque la pantalla ya las haya
+ * consultado: entre el cartel y la confirmación la clienta pudo haber usado el
+ * saldo en otra compra.
+ *
+ * Devuelve los motivos si no se pudo; `{ motivos: [], monto }` si se devolvió.
+ */
+export async function devolverPlataDeCompra(
+  db: Db,
+  id: string,
+  ctx: { descripcion: string; notas?: string | null },
+): Promise<{ motivos: string[]; monto: number }> {
+  const estado = await getEstadoDeDevolucion(db, id);
+  if (!estado) return { motivos: ["la compra no existe"], monto: 0 };
+
+  const motivos = razonesParaNoDevolver(estado);
+  if (motivos.length > 0) return { motivos, monto: 0 };
+
+  const monto = montoADevolver(estado);
+  if (monto <= 0) return { motivos: ["no hay plata para devolver"], monto: 0 };
+
+  const [compra] = await db
+    .select({ customerId: customerPurchase.customerId })
+    .from(customerPurchase)
+    .where(eq(customerPurchase.id, id))
+    .limit(1);
+  if (!compra?.customerId) return { motivos: ["la compra no tiene clienta"], monto: 0 };
+
+  await db.transaction(async (tx) => {
+    const ok = await debitCustomerCredit(tx, compra.customerId!, monto, {
+      reason: "refunded",
+      customerPurchaseId: id,
+      notes: ctx.notas ?? `Devolución en efectivo de "${ctx.descripcion}"`,
+    });
+    // La guarda de carrera: si entre la lectura y esta línea el saldo se usó
+    // en otra compra, el WHERE no matchea y la transacción entera se cae. Sin
+    // esto quedaría un egreso de caja sin respaldo.
+    if (!ok) throw new Error("El saldo a favor cambió mientras se devolvía. Probá de nuevo.");
+
+    await tx.insert(cashRegister).values({
+      // NEGATIVO: es plata que sale. Así lo entiende la rendición del día,
+      // que suma los movimientos manuales a la caja en efectivo.
+      amount: dec(-monto),
+      source: "refund",
+      description: `Devolución a cliente — ${ctx.descripcion}`,
+      // Sale de plata que ya se declaró al cobrar la compra, así que la
+      // devolución también se declara: si no, la rendición mostraría un
+      // ingreso declarado que nunca se compensa.
+      isDeclared: true,
+      status: "recorded",
+      registrationDate: new Date(),
+    });
+  });
+
+  return { motivos: [], monto };
 }

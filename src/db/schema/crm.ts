@@ -73,6 +73,10 @@ export const customerCreditMovements = pgTable("customer_credit_movements", {
   reason: varchar("reason", { length: 50 }).notNull(),
   appointmentId: uuid("appointment_id"),
   paymentId: uuid("payment_id"),
+  /** De qué compra salió este movimiento (1.46.0). Es lo que permite saber si
+   *  esa plata vino de un pack pagado entero —devolvible— o de una seña, y lo
+   *  que evita devolver dos veces la misma compra. */
+  customerPurchaseId: uuid("customer_purchase_id"),
   notes: text("notes"),
   createdAt: createdAt(),
 });
