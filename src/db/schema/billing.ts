@@ -203,6 +203,8 @@ export const customerPurchase = pgTable("customer_purchase", {
   comboId: uuid("combo_id"),
   serviceId: uuid("service_id"),
   depilationComboId: uuid("depilation_combo_id"),
+  /** Capacitación vendida (1.48.0). Cuarto origen, previsto por el diseño. */
+  trainingId: uuid("training_id"),
   description: varchar("description", { length: 200 }),
   sessionsTotal: integer("sessions_total"),
   baseAmount: decimal("base_amount", { precision: 10, scale: 2 }),

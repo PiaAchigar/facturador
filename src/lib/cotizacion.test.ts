@@ -86,6 +86,19 @@ describe("cotizar — sesiones que no son las del pack", () => {
     expect(cotizar(servicio, 1, null, COMPRA).description).toBe("Venus Legacy 1 zona");
   });
 
+  it("un pack de UNA sesión no se llama pack", () => {
+    // Una capacitación tiene política de 1 sesión: "Instructorado — pack de 1"
+    // se lee como un error del sistema.
+    const capacitacion: ItemVendible = {
+      origen: "capacitacion",
+      id: "t1",
+      nombre: "Instructorado de Pilates",
+      unitario: 403000,
+      politica: { sesiones: 1, descuentoPct: 0, redondeo: 1 },
+    };
+    expect(cotizar(capacitacion, 1, null, COMPRA).description).toBe("Instructorado de Pilates");
+  });
+
   it("con las del pack sí descuenta", () => {
     expect(cotizar(servicio, 6, null, COMPRA).discountedAmount).toBe(51000);
   });

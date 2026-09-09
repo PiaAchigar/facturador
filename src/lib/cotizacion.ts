@@ -46,7 +46,7 @@ export type ItemVendible =
       validityMonths: number | null;
     }
   | {
-      origen: "depilacion" | "servicio";
+      origen: "depilacion" | "servicio" | "capacitacion";
       id: string;
       nombre: string;
       /** Lo que sale UNA sesión, sin ningún descuento. */
@@ -152,9 +152,15 @@ function politicaComoConfig(p: PackPolitica) {
   return { packSesiones: p.sesiones, packDescuentoPct: p.descuentoPct, packRedondeo: p.redondeo };
 }
 
-/** "Media pierna — pack de 6" / "Venus Legacy — 2 sesiones" / "Venus Legacy". */
+/**
+ * "Media pierna — pack de 6" / "Venus Legacy — 2 sesiones" / "Venus Legacy".
+ *
+ * Una sola sesión nunca lleva apellido, ni siquiera cuando técnicamente es "el
+ * pack": una capacitación tiene política de 1 sesión, y "Instructorado de
+ * Pilates — pack de 1" se lee como un error.
+ */
 function describir(nombre: string, sesiones: number, esPack: boolean): string {
+  if (sesiones === 1) return nombre;
   if (esPack) return `${nombre} — pack de ${sesiones}`;
-  if (sesiones > 1) return `${nombre} — ${sesiones} sesiones`;
-  return nombre;
+  return `${nombre} — ${sesiones} sesiones`;
 }

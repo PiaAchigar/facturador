@@ -85,7 +85,7 @@ comprasRouter.post(
   zValidator(
     "json",
     z.object({
-      origen: z.enum(["combo", "depilacion", "servicio"]),
+      origen: z.enum(["combo", "depilacion", "servicio", "capacitacion"]),
       id: z.string().uuid(),
       sessions: z.number().int().positive(),
       promotionId: z.string().uuid().nullish(),
@@ -96,7 +96,11 @@ comprasRouter.post(
     const { origen, id, sessions, promotionId } = c.req.valid("json");
 
     const item = await obtenerItemVendible(db, origen, id);
-    if (!item) throw notFound(origen === "servicio" ? "Servicio" : "Combo");
+    if (!item) {
+      throw notFound(
+        origen === "servicio" ? "Servicio" : origen === "capacitacion" ? "Capacitación" : "Combo",
+      );
+    }
 
     // Una promo que no está vigente no se aplica en silencio: se avisa, porque
     // el precio que Laura ve es el que se va a congelar.
@@ -115,6 +119,7 @@ comprasRouter.post(
         comboId: origen === "combo" ? id : null,
         depilationComboId: origen === "depilacion" ? id : null,
         serviceId: origen === "servicio" ? id : null,
+        trainingId: origen === "capacitacion" ? id : null,
       });
     } catch (e) {
       throw badRequest((e as Error).message);
@@ -137,6 +142,7 @@ const compraBody = z
     comboId: z.string().uuid().nullish(),
     serviceId: z.string().uuid().nullish(),
     depilationComboId: z.string().uuid().nullish(),
+    trainingId: z.string().uuid().nullish(),
     description: z.string().min(1).max(200),
     sessionsTotal: z.number().int().positive(),
     baseAmount: z.number().nonnegative(),
@@ -149,8 +155,12 @@ const compraBody = z
     usarSaldo: z.number().nonnegative().nullish(),
   })
   .refine(
-    (v) => [v.comboId, v.serviceId, v.depilationComboId].filter(Boolean).length === 1,
-    { message: "Una compra tiene exactamente un origen: combo, servicio o combo de depilación" },
+    (v) =>
+      [v.comboId, v.serviceId, v.depilationComboId, v.trainingId].filter(Boolean).length === 1,
+    {
+      message:
+        "Una compra tiene exactamente un origen: combo, servicio, combo de depilación o capacitación",
+    },
   )
   .refine((v) => v.finalAmount <= v.discountedAmount && v.discountedAmount <= v.baseAmount, {
     // Los tres montos son las tres capas en orden. Si vinieran desordenados,

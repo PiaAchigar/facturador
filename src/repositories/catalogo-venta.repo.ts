@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
-import { promotions, service } from "../db/schema";
+import { promotions, service, training } from "../db/schema";
 import { precioDeServicio } from "../lib/combo-pricing";
 import { todayLocal } from "../lib/time";
 import type { ItemVendible, PromoVendible } from "../lib/cotizacion";
@@ -38,18 +38,25 @@ function comboVendible(c: ComboArmado): ItemVendible {
 export type ItemDeCatalogo = ItemVendible & {
   /** Sesiones que lleva el pack de este item, si es un pack. */
   packSesiones: number | null;
+  /** El descuento de ese pack, para que la pantalla pueda decirlo. */
+  packDescuentoPct: number | null;
   /** Precio de lista de la venta más común, para ordenar y mostrar. */
   precioDesde: number;
 };
 
 function aItemDeCatalogo(item: ItemVendible): ItemDeCatalogo {
   return item.origen === "combo"
-    ? { ...item, packSesiones: null, precioDesde: item.conDescuento }
-    : { ...item, packSesiones: item.politica.sesiones, precioDesde: item.unitario };
+    ? { ...item, packSesiones: null, packDescuentoPct: null, precioDesde: item.conDescuento }
+    : {
+        ...item,
+        packSesiones: item.politica.sesiones,
+        packDescuentoPct: item.politica.descuentoPct,
+        precioDesde: item.unitario,
+      };
 }
 
 export async function listCatalogoVendible(db: Db) {
-  const [genericos, depilacion, servicios, config] = await Promise.all([
+  const [genericos, depilacion, servicios, capacitaciones, config] = await Promise.all([
     listCombos(db),
     listarCombos(db),
     db
@@ -62,6 +69,17 @@ export async function listCatalogoVendible(db: Db) {
       .from(service)
       .where(eq(service.isActive, true))
       .orderBy(asc(service.name)),
+    db
+      .select({
+        id: training.id,
+        name: training.name,
+        listPrice: training.listPrice,
+        cashPrice: training.cashPrice,
+        totalSessions: training.totalSessions,
+      })
+      .from(training)
+      .where(eq(training.isActive, true))
+      .orderBy(asc(training.name)),
     leerConfig(db),
   ]);
 
@@ -93,6 +111,18 @@ export async function listCatalogoVendible(db: Db) {
         nombre: s.name ?? "Sin nombre",
         unitario: precioDeServicio(s.unitPriceList, s.unitPriceCash),
         politica: global,
+      }),
+    ),
+    // Una capacitación se vende ENTERA: `list_price` es el precio del curso
+    // completo, no el de una clase. Por eso su "pack" es de 1 sesión — vender
+    // media capacitación no existe.
+    capacitaciones: capacitaciones.map((t) =>
+      aItemDeCatalogo({
+        origen: "capacitacion",
+        id: t.id,
+        nombre: t.name ?? "Sin nombre",
+        unitario: precioDeServicio(t.listPrice, t.cashPrice),
+        politica: { sesiones: 1, descuentoPct: 0, redondeo: 1 },
       }),
     ),
   };
@@ -127,6 +157,27 @@ export async function obtenerItemVendible(
         descuentoPct: c.pack.descuentoPct,
         redondeo: c.pack.redondeo,
       },
+    };
+  }
+
+  if (origen === "capacitacion") {
+    const [t] = await db
+      .select({
+        id: training.id,
+        name: training.name,
+        listPrice: training.listPrice,
+        cashPrice: training.cashPrice,
+      })
+      .from(training)
+      .where(eq(training.id, id))
+      .limit(1);
+    if (!t) return null;
+    return {
+      origen: "capacitacion",
+      id: t.id,
+      nombre: t.name ?? "Sin nombre",
+      unitario: precioDeServicio(t.listPrice, t.cashPrice),
+      politica: { sesiones: 1, descuentoPct: 0, redondeo: 1 },
     };
   }
 

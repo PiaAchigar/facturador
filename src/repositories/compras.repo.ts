@@ -28,6 +28,7 @@ const compraFields = {
   comboId: customerPurchase.comboId,
   serviceId: customerPurchase.serviceId,
   depilationComboId: customerPurchase.depilationComboId,
+  trainingId: customerPurchase.trainingId,
   description: customerPurchase.description,
   sessionsTotal: customerPurchase.sessionsTotal,
   baseAmount: customerPurchase.baseAmount,
@@ -46,6 +47,7 @@ export type CompraInput = {
   comboId?: string | null;
   serviceId?: string | null;
   depilationComboId?: string | null;
+  trainingId?: string | null;
   description: string;
   sessionsTotal: number;
   baseAmount: number;
@@ -71,9 +73,16 @@ const dec = (n: number) => String(n);
  * 6 sesiones sin ninguna agendada se vería igual que una de 0.
  */
 export async function createCompra(db: Db, input: CompraInput) {
-  const origenes = [input.comboId, input.serviceId, input.depilationComboId].filter(Boolean);
+  const origenes = [
+    input.comboId,
+    input.serviceId,
+    input.depilationComboId,
+    input.trainingId,
+  ].filter(Boolean);
   if (origenes.length !== 1) {
-    throw new Error("Una compra tiene exactamente un origen: combo, servicio o combo de depilación");
+    throw new Error(
+      "Una compra tiene exactamente un origen: combo, servicio, combo de depilación o capacitación",
+    );
   }
   if (input.sessionsTotal < 1) throw new Error("La compra necesita al menos una sesión");
 
@@ -85,6 +94,7 @@ export async function createCompra(db: Db, input: CompraInput) {
         comboId: input.comboId ?? null,
         serviceId: input.serviceId ?? null,
         depilationComboId: input.depilationComboId ?? null,
+        trainingId: input.trainingId ?? null,
         description: input.description,
         sessionsTotal: input.sessionsTotal,
         baseAmount: dec(input.baseAmount),
