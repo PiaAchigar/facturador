@@ -137,6 +137,8 @@ export async function listRecentCustomers(db: Db, limit = 20) {
  *  leer y escribir el balance. */
 export type CreditMovementReason =
   | "appointment_cancelled"
+  /** Se canceló un pack/combo/servicio comprado y quedó a favor lo no usado. */
+  | "purchase_cancelled"
   | "deposit_paid_with_credit"
   | "manual_adjustment";
 

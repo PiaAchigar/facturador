@@ -10,6 +10,8 @@ import {
 } from "../db/schema";
 import { estadoDeSesion, resumenDeCompra, type EstadoSesion } from "../lib/compras";
 import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-borrado";
+import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
+import { creditCustomer } from "./customers.repo";
 
 const compraFields = {
   id: customerPurchase.id,
@@ -173,24 +175,82 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
 }
 
 /**
- * Cancela una compra. No borra: puede tener pagos y facturas colgando, y una
- * venta cancelada sigue siendo parte de la historia de la clienta.
+ * Cancela una compra y le deja a la clienta lo que pagó de más como SALDO A
+ * FAVOR. No borra: puede tener pagos y facturas colgando, y una venta cancelada
+ * sigue siendo parte de la historia de la clienta.
  *
  * Las sesiones sin usar pasan solas a *vencida* — se deriva de `cancelledAt`.
+ *
+ * **Por qué acredita en vez de devolver:** lo que Laura quiere primero es
+ * ofrecerle a la clienta usar esa plata en otro tratamiento, no sacarla de la
+ * caja (decisión de Pia, 2026-09-09). La devolución existe, pero es el último
+ * recurso y es un botón aparte.
+ *
+ * Todo en UNA transacción: cancelar sin acreditar dejaría a la clienta sin la
+ * plata y sin el pack.
  */
 export async function cancelCompra(db: Db, id: string, motivo?: string | null) {
-  const filas = await db
-    .update(customerPurchase)
-    .set({
-      cancelledAt: new Date(),
-      notes: motivo ?? undefined,
-      updatedAt: new Date(),
+  return db.transaction(async (tx) => {
+    const filas = await tx
+      .update(customerPurchase)
+      .set({
+        cancelledAt: new Date(),
+        notes: motivo ?? undefined,
+        updatedAt: new Date(),
+      })
+      // Sólo si no estaba cancelada: cancelar dos veces pisaría la fecha de la
+      // primera, que es la que dice cuándo dejó de valer, y acreditaría la
+      // plata dos veces.
+      .where(and(eq(customerPurchase.id, id), isNull(customerPurchase.cancelledAt)))
+      .returning(compraFields);
+
+    const compra = filas[0];
+    if (!compra) return null;
+
+    const acreditado = await acreditarSobranteDeCompra(tx, compra);
+    return { ...compra, saldoAcreditado: acreditado };
+  });
+}
+
+/**
+ * Le acredita a la clienta lo que pagó por sesiones que no llegó a usar.
+ *
+ * Devuelve cuánto se acreditó (0 si no había nada), para que la pantalla pueda
+ * decir "le quedaron $110.667 a favor" en vez de dejarlo mudo.
+ */
+async function acreditarSobranteDeCompra(
+  tx: Db,
+  compra: { id: string; customerId: string | null; finalAmount: string | null; sessionsTotal: number | null },
+): Promise<number> {
+  if (!compra.customerId) return 0;
+
+  const [cobrado] = await tx
+    .select({ total: sql<string>`coalesce(sum(${payments.amount}), 0)` })
+    .from(payments)
+    .where(
+      and(eq(payments.customerPurchaseId, compra.id), eq(payments.status, "confirmed")),
+    );
+
+  const [usadas] = await tx
+    .select({
+      consumidas: sql<number>`count(*) filter (where ${customerPurchaseSession.consumedAt} is not null)`,
     })
-    // Sólo si no estaba cancelada: cancelar dos veces pisaría la fecha de la
-    // primera, que es la que dice cuándo dejó de valer.
-    .where(and(eq(customerPurchase.id, id), isNull(customerPurchase.cancelledAt)))
-    .returning(compraFields);
-  return filas[0] ?? null;
+    .from(customerPurchaseSession)
+    .where(eq(customerPurchaseSession.customerPurchaseId, compra.id));
+
+  const monto = saldoAAcreditar({
+    pagado: Number(cobrado?.total ?? 0),
+    finalAmount: Number(compra.finalAmount ?? 0),
+    sessionsTotal: compra.sessionsTotal ?? 0,
+    consumidas: Number(usadas?.consumidas ?? 0),
+  });
+  if (monto <= 0) return 0;
+
+  await creditCustomer(tx, compra.customerId, monto, {
+    reason: "purchase_cancelled",
+    notes: `Cancelación de "${(compra as { description?: string | null }).description ?? "una compra"}"`,
+  });
+  return monto;
 }
 
 /**
