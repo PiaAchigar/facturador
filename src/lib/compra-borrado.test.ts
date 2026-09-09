@@ -7,6 +7,7 @@ const limpia: ImpactoDeBorrado = {
   facturas: 0,
   sesionesAgendadas: 0,
   sesionesConsumidas: 0,
+  movimientosDeSaldo: 0,
 };
 
 describe("razonesParaNoBorrarCompra", () => {
@@ -46,6 +47,14 @@ describe("razonesParaNoBorrarCompra", () => {
     ]);
   });
 
+  it("un movimiento de saldo a favor la traba", () => {
+    // La cancelación le acreditó plata: borrar la compra dejaría el libro de
+    // saldo apuntando a algo que no existe.
+    expect(razonesParaNoBorrarCompra({ ...limpia, movimientosDeSaldo: 1 })).toEqual([
+      "movió el saldo a favor de la clienta",
+    ]);
+  });
+
   it("los junta todos: el cartel muestra la lista completa", () => {
     // Mostrar sólo el primero obliga a destrabar de a uno sin saber cuánto
     // falta.
@@ -55,8 +64,9 @@ describe("razonesParaNoBorrarCompra", () => {
       facturas: 1,
       sesionesAgendadas: 1,
       sesionesConsumidas: 1,
+      movimientosDeSaldo: 1,
     });
-    expect(motivos).toHaveLength(4);
+    expect(motivos).toHaveLength(5);
   });
 
   it("un pago de cero igual traba", () => {

@@ -19,6 +19,8 @@ export type ImpactoDeBorrado = {
   facturas: number;
   sesionesAgendadas: number;
   sesionesConsumidas: number;
+  /** Movimientos de saldo a favor atados a esta compra (1.46.0). */
+  movimientosDeSaldo: number;
 };
 
 const pesos = (n: number) => `$${Math.round(n).toLocaleString("es-AR")}`;
@@ -51,6 +53,11 @@ export function razonesParaNoBorrarCompra(i: ImpactoDeBorrado): string[] {
     motivos.push(
       `tiene ${i.sesionesConsumidas} ${i.sesionesConsumidas === 1 ? "sesión ya consumida" : "sesiones ya consumidas"}`,
     );
+  }
+  if (i.movimientosDeSaldo > 0) {
+    // Borrarla dejaría el libro de saldo a favor con movimientos que apuntan a
+    // una compra inexistente — y el FK de la 1.46.0 directamente lo impide.
+    motivos.push("movió el saldo a favor de la clienta");
   }
 
   return motivos;

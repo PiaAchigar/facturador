@@ -192,7 +192,7 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
   if (compras.length === 0) return [];
   const ids = compras.map((c) => c.id);
 
-  const [sesiones, pagos] = await Promise.all([
+  const [sesiones, pagos, devoluciones] = await Promise.all([
     db
       .select({
         id: customerPurchaseSession.id,
@@ -215,6 +215,20 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
       .where(
         and(inArray(payments.customerPurchaseId, ids), eq(payments.status, "confirmed")),
       ),
+    // Las devoluciones ya hechas. El movimiento es NEGATIVO (sale del saldo),
+    // así que se le da vuelta el signo para mostrarlo.
+    db
+      .select({
+        customerPurchaseId: customerCreditMovements.customerPurchaseId,
+        amount: customerCreditMovements.amount,
+      })
+      .from(customerCreditMovements)
+      .where(
+        and(
+          inArray(customerCreditMovements.customerPurchaseId, ids),
+          eq(customerCreditMovements.reason, "refunded"),
+        ),
+      ),
   ]);
 
   return compras.map((c) => {
@@ -226,11 +240,18 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
       pagos.filter((p) => p.customerPurchaseId === c.id).map((p) => Number(p.amount)),
       ahora,
     );
+    const misDevoluciones = devoluciones.filter((d) => d.customerPurchaseId === c.id);
+    const devuelto = misDevoluciones.reduce((a, d) => a + Math.abs(Number(d.amount)), 0);
+
     return {
       ...c,
       baseAmount: Number(c.baseAmount),
       discountedAmount: Number(c.discountedAmount),
       finalAmount: Number(c.finalAmount),
+      // La pantalla necesita saberlo para no ofrecer devolver dos veces y para
+      // mostrar que esta compra ya se cerró con plata en mano.
+      devuelta: misDevoluciones.length > 0,
+      devuelto,
       ...resumen,
       sessions: mias
         .sort((a, b) => (a.sessionNumber ?? 0) - (b.sessionNumber ?? 0))
@@ -342,7 +363,7 @@ async function acreditarSobranteDeCompra(
  * pero para borrar cuenta cualquier rastro.
  */
 export async function getCompraDeleteImpact(db: Db, id: string): Promise<ImpactoDeBorrado> {
-  const [pagos, facturas, sesiones] = await Promise.all([
+  const [pagos, facturas, sesiones, saldo] = await Promise.all([
     db
       .select({
         cantidad: count(),
@@ -362,6 +383,12 @@ export async function getCompraDeleteImpact(db: Db, id: string): Promise<Impacto
       })
       .from(customerPurchaseSession)
       .where(eq(customerPurchaseSession.customerPurchaseId, id)),
+    // Movimientos de saldo a favor. Sin esto el DELETE reventaba contra el FK
+    // de la 1.46.0 con un error crudo de Postgres en vez de un motivo legible.
+    db
+      .select({ cantidad: count() })
+      .from(customerCreditMovements)
+      .where(eq(customerCreditMovements.customerPurchaseId, id)),
   ]);
 
   return {
@@ -370,6 +397,7 @@ export async function getCompraDeleteImpact(db: Db, id: string): Promise<Impacto
     facturas: Number(facturas[0]?.cantidad ?? 0),
     sesionesAgendadas: Number(sesiones[0]?.agendadas ?? 0),
     sesionesConsumidas: Number(sesiones[0]?.consumidas ?? 0),
+    movimientosDeSaldo: Number(saldo[0]?.cantidad ?? 0),
   };
 }
 
