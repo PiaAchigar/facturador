@@ -4,7 +4,15 @@ import { z } from "zod";
 import { createDb } from "../../db/client";
 import { badRequest, notFound } from "../../lib/errors";
 import { auth, requireAuth, requirePermission } from "../../middleware/auth";
-import { cancelCompra, createCompra, listComprasDeCliente } from "../../repositories/compras.repo";
+import {
+  cancelCompra,
+  createCompra,
+  deleteCompraPermanently,
+  getCompraById,
+  getCompraDeleteImpact,
+  listComprasDeCliente,
+} from "../../repositories/compras.repo";
+import { razonesParaNoBorrarCompra } from "../../lib/compra-borrado";
 import {
   listCatalogoVendible,
   listPromosVendibles,
@@ -179,6 +187,56 @@ comprasRouter.post(
     // cancelar acá"; distinguirlas no le cambia nada a quien lo pide.
     if (!cancelada) throw notFound("Compra");
     return c.json(cancelada);
+  },
+);
+
+/**
+ * Qué cuelga de una compra, para que el cartel diga por qué no se puede borrar
+ * antes de que Laura apriete nada.
+ */
+comprasRouter.get(
+  "/purchases/:id/delete-impact",
+  auth,
+  requireAuth,
+  requirePermission("crm", "view"),
+  async (c) => {
+    const db = createDb(c.env);
+    const id = c.req.param("id");
+    if (!(await getCompraById(db, id))) throw notFound("Compra");
+
+    const impacto = await getCompraDeleteImpact(db, id);
+    const motivos = razonesParaNoBorrarCompra(impacto);
+    return c.json({ ...impacto, motivos, borrable: motivos.length === 0 });
+  },
+);
+
+/**
+ * Borra una compra para siempre. Es para lo que NUNCA DEBIÓ EXISTIR —una venta
+ * cargada por error— y por eso no deja rastro: no hay nada que contar.
+ *
+ * Si algo cuelga (un cobro, una factura, un turno), no se borra: eso pasó de
+ * verdad y se cancela, que sí deja el registro.
+ *
+ * El permiso es el mismo que vender (`crm.edit`) y no admin: lo que protege
+ * acá es la guarda de impacto, no el rol. Si sólo el admin pudiera limpiar un
+ * error de tipeo, el error se quedaría en la ficha para siempre — que es
+ * justamente lo que este botón viene a evitar.
+ */
+comprasRouter.delete(
+  "/purchases/:id",
+  auth,
+  requireAuth,
+  requirePermission("crm", "edit"),
+  async (c) => {
+    const db = createDb(c.env);
+    const id = c.req.param("id");
+    if (!(await getCompraById(db, id))) throw notFound("Compra");
+
+    const motivos = await deleteCompraPermanently(db, id);
+    if (motivos.length > 0) {
+      throw badRequest(`No se puede eliminar esta compra porque ${motivos.join(", ")}.`);
+    }
+    return c.body(null, 204);
   },
 );
 

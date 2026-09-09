@@ -1,13 +1,15 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   appointments,
   customerPurchase,
   customerPurchaseSession,
+  lineItems,
   payments,
   promotions,
 } from "../db/schema";
 import { estadoDeSesion, resumenDeCompra, type EstadoSesion } from "../lib/compras";
+import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-borrado";
 
 const compraFields = {
   id: customerPurchase.id,
@@ -189,4 +191,79 @@ export async function cancelCompra(db: Db, id: string, motivo?: string | null) {
     .where(and(eq(customerPurchase.id, id), isNull(customerPurchase.cancelledAt)))
     .returning(compraFields);
   return filas[0] ?? null;
+}
+
+/**
+ * Qué cuelga de una compra. Es lo que decide si se puede borrar.
+ *
+ * Cuenta pagos de CUALQUIER estado, no sólo los confirmados: un cobro pendiente
+ * o fallido sigue siendo una fila que quedaría apuntando a una compra que ya no
+ * está. Para el saldo sólo cuentan los confirmados (`listComprasDeCliente`),
+ * pero para borrar cuenta cualquier rastro.
+ */
+export async function getCompraDeleteImpact(db: Db, id: string): Promise<ImpactoDeBorrado> {
+  const [pagos, facturas, sesiones] = await Promise.all([
+    db
+      .select({
+        cantidad: count(),
+        // COALESCE porque `sum` de cero filas es NULL, no 0.
+        monto: sql<string>`coalesce(sum(${payments.amount}), 0)`,
+      })
+      .from(payments)
+      .where(eq(payments.customerPurchaseId, id)),
+    db
+      .select({ cantidad: count() })
+      .from(lineItems)
+      .where(eq(lineItems.customerPurchaseId, id)),
+    db
+      .select({
+        agendadas: sql<number>`count(*) filter (where ${customerPurchaseSession.appointmentId} is not null)`,
+        consumidas: sql<number>`count(*) filter (where ${customerPurchaseSession.consumedAt} is not null)`,
+      })
+      .from(customerPurchaseSession)
+      .where(eq(customerPurchaseSession.customerPurchaseId, id)),
+  ]);
+
+  return {
+    pagos: Number(pagos[0]?.cantidad ?? 0),
+    montoPagado: Number(pagos[0]?.monto ?? 0),
+    facturas: Number(facturas[0]?.cantidad ?? 0),
+    sesionesAgendadas: Number(sesiones[0]?.agendadas ?? 0),
+    sesionesConsumidas: Number(sesiones[0]?.consumidas ?? 0),
+  };
+}
+
+/**
+ * Borra una compra para siempre, con sus sesiones.
+ *
+ * Vuelve a calcular el impacto acá aunque la pantalla ya lo haya consultado:
+ * entre que se abre el cartel y se confirma le puede haber entrado un cobro, y
+ * el navegador nunca decide si algo es borrable. Mismo criterio que el borrado
+ * permanente de clientes.
+ *
+ * Devuelve los motivos si no se pudo. Vacío = borrada.
+ */
+export async function deleteCompraPermanently(db: Db, id: string): Promise<string[]> {
+  const motivos = razonesParaNoBorrarCompra(await getCompraDeleteImpact(db, id));
+  if (motivos.length > 0) return motivos;
+
+  await db.transaction(async (tx) => {
+    // Las sesiones tienen ON DELETE CASCADE, pero se borran explícitamente:
+    // depender de la cascada obliga a leer el DDL para entender qué pasa acá.
+    await tx
+      .delete(customerPurchaseSession)
+      .where(eq(customerPurchaseSession.customerPurchaseId, id));
+    await tx.delete(customerPurchase).where(eq(customerPurchase.id, id));
+  });
+  return [];
+}
+
+/** Una compra por id, para saber si existe antes de tocarla. */
+export async function getCompraById(db: Db, id: string) {
+  const [fila] = await db
+    .select(compraFields)
+    .from(customerPurchase)
+    .where(eq(customerPurchase.id, id))
+    .limit(1);
+  return fila ?? null;
 }
