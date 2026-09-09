@@ -559,3 +559,12 @@ export async function devolverPlataDeCompra(
 
   return { motivos: [], monto };
 }
+
+/** Lo efectivamente cobrado de una compra: la única definición del saldo. */
+export async function getPagadoDeCompra(db: Db, id: string): Promise<number> {
+  const [fila] = await db
+    .select({ total: sql<string>`coalesce(sum(${payments.amount}), 0)` })
+    .from(payments)
+    .where(and(eq(payments.customerPurchaseId, id), eq(payments.status, "confirmed")));
+  return Number(fila?.total ?? 0);
+}

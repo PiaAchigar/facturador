@@ -22,6 +22,15 @@ import { products } from "../db/schema";
 export type DraftItemInput = {
   serviceId?: string;
   productId?: string;
+  /**
+   * Concepto libre, para cobrar algo que no es una fila del catálogo — hoy,
+   * una COMPRA (`customer_purchase`): un pack de depilación no es un `service`
+   * ni un `product`, y sin esto no había cómo nombrarlo en la factura.
+   * Requiere `unitPrice`: no hay catálogo del que sacarlo.
+   */
+  description?: string;
+  /** La compra que se está cobrando, si la línea es de una. */
+  customerPurchaseId?: string;
   quantity: number;
   /** Si no viene, se resuelve del catálogo. */
   unitPrice?: number;
@@ -33,6 +42,8 @@ export type DraftItemInput = {
 type ResolvedItem = {
   serviceId: string | null;
   productId: string | null;
+  description: string | null;
+  customerPurchaseId: string | null;
   quantity: number;
   unitPrice: number;
   billable: boolean;
@@ -41,14 +52,17 @@ type ResolvedItem = {
 export async function resolveItems(db: Db, items: DraftItemInput[]): Promise<ResolvedItem[]> {
   const resolved: ResolvedItem[] = [];
   for (const item of items) {
-    if (!item.serviceId && !item.productId) {
-      throw badRequest("Cada ítem necesita serviceId o productId");
+    // Un concepto libre trae su propio texto y su propio precio: no hay
+    // catálogo del que resolverlo.
+    const esConceptoLibre = !item.serviceId && !item.productId;
+    if (esConceptoLibre && !(item.description && item.unitPrice != null)) {
+      throw badRequest("Cada ítem necesita serviceId, productId, o una descripción con su precio");
     }
     if (item.serviceId && item.productId) {
       throw badRequest("Un ítem no puede ser servicio y producto a la vez");
     }
     let unitPrice = item.unitPrice;
-    if (unitPrice == null) {
+    if (unitPrice == null && !esConceptoLibre) {
       if (item.serviceId) {
         const svc = await getServiceById(db, item.serviceId);
         if (!svc) throw notFound("Service");
@@ -68,8 +82,10 @@ export async function resolveItems(db: Db, items: DraftItemInput[]): Promise<Res
     resolved.push({
       serviceId: item.serviceId ?? null,
       productId: item.productId ?? null,
+      description: item.description ?? null,
+      customerPurchaseId: item.customerPurchaseId ?? null,
       quantity: item.quantity,
-      unitPrice,
+      unitPrice: unitPrice!,
       billable: item.billable !== false,
     });
   }

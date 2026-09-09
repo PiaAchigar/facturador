@@ -15,6 +15,10 @@ import {
   listComprasDeCliente,
 } from "../../repositories/compras.repo";
 import { montoADevolver, razonesParaNoDevolver } from "../../lib/devolucion";
+import { cobroDeCompra, razonesParaNoCobrar } from "../../lib/cobro-de-compra";
+import { checkout } from "../../services/checkout.service";
+import { resolveArcaConfig } from "../../arca/factory";
+import { getPagadoDeCompra } from "../../repositories/compras.repo";
 import { razonesParaNoBorrarCompra } from "../../lib/compra-borrado";
 import {
   listCatalogoVendible,
@@ -299,6 +303,90 @@ comprasRouter.post(
       throw badRequest(`No se puede devolver la plata porque ${motivos.join(", ")}.`);
     }
     return c.json({ monto });
+  },
+);
+
+/**
+ * Cobra una compra: reutiliza el MISMO `checkout()` del mostrador.
+ *
+ * No duplica nada de facturación. Ese servicio ya resuelve la factura ARCA
+ * cuando va el tilde "lleva factura", el split declarado/no declarado, el
+ * movimiento de caja y las líneas de detalle; acá sólo se le arma la entrada a
+ * partir de la compra, que es lo único que él no sabe.
+ *
+ * La línea va como CONCEPTO LIBRE con la descripción congelada de la compra:
+ * un pack de depilación no es un `service` ni un `product`, así que sin eso no
+ * había forma de nombrarlo en la factura.
+ */
+comprasRouter.post(
+  "/purchases/:id/checkout",
+  auth,
+  requireAuth,
+  requirePermission("crm", "edit"),
+  zValidator(
+    "json",
+    z.object({
+      amount: z.number().positive(),
+      method: z.enum(["cash", "bank_transfer", "mercadopago", "debit_card", "credit_card"]),
+      wantsInvoice: z.boolean().default(false),
+      issuerId: z.string().uuid().nullish(),
+      notes: z.string().max(500).nullish(),
+    }),
+  ),
+  async (c) => {
+    const db = createDb(c.env);
+    const id = c.req.param("id");
+    const compra = await getCompraById(db, id);
+    if (!compra) throw notFound("Compra");
+    if (compra.cancelledAt) throw badRequest("Esta compra está cancelada");
+    if (!compra.customerId) throw badRequest("La compra no tiene clienta");
+
+    const b = c.req.valid("json");
+    const estado = {
+      finalAmount: Number(compra.finalAmount ?? 0),
+      yaPagado: await getPagadoDeCompra(db, id),
+    };
+    const motivos = razonesParaNoCobrar(b.amount, estado);
+    if (motivos.length > 0) throw badRequest(`No se puede cobrar: ${motivos.join(", ")}.`);
+
+    const arca = await resolveArcaConfig(db, c.env, b.issuerId ?? undefined);
+    const resultado = await checkout(db, arca, {
+      customerId: compra.customerId,
+      customerPurchaseId: id,
+      issuerId: b.issuerId ?? undefined,
+      items: [
+        {
+          description: compra.description ?? "Compra",
+          customerPurchaseId: id,
+          quantity: 1,
+          unitPrice: b.amount,
+        },
+      ],
+      payment: { method: b.method, amount: b.amount, wantsInvoice: b.wantsInvoice },
+      notes: b.notes ?? undefined,
+    });
+
+    return c.json({ ...resultado, ...cobroDeCompra({ ...estado, yaPagado: estado.yaPagado + b.amount }) }, 201);
+  },
+);
+
+/** Cuánto falta cobrar de esta compra y cuál es el mínimo de ahora. */
+comprasRouter.get(
+  "/purchases/:id/checkout-state",
+  auth,
+  requireAuth,
+  requirePermission("crm", "view"),
+  async (c) => {
+    const db = createDb(c.env);
+    const id = c.req.param("id");
+    const compra = await getCompraById(db, id);
+    if (!compra) throw notFound("Compra");
+    return c.json(
+      cobroDeCompra({
+        finalAmount: Number(compra.finalAmount ?? 0),
+        yaPagado: await getPagadoDeCompra(db, id),
+      }),
+    );
   },
 );
 

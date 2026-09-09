@@ -18,9 +18,14 @@ export type CheckoutInput = {
   issuerId?: string;
   /** Turno que se está cobrando (se marca completed con snapshot de comisión). */
   appointmentId?: string;
+  /** Compra que se está cobrando. Queda en los pagos y en las líneas, y es lo
+   *  que hace que el saldo de la compra baje solo. */
+  customerPurchaseId?: string;
   items: DraftItemInput[];
   payment: {
-    method: "cash" | "bank_transfer" | "mercadopago";
+    // débito y crédito exigidos por la regla 5.10: un pack se paga con tarjeta
+    // más seguido que en efectivo.
+    method: "cash" | "bank_transfer" | "mercadopago" | "debit_card" | "credit_card";
     amount: number;
     /** Tilde "lleva factura": genera factura draft para emitir (ahora o en lote). */
     wantsInvoice: boolean;
@@ -101,6 +106,7 @@ export async function checkout(db: Db, arca: ArcaConfig, input: CheckoutInput) {
         appointmentId: input.appointmentId ?? null,
         amount: amount.toFixed(2),
         paymentMethod: input.payment.method,
+        customerPurchaseId: input.customerPurchaseId ?? null,
         status: "confirmed",
         paymentDate: now,
         isDeclared: declared,
@@ -125,6 +131,8 @@ export async function checkout(db: Db, arca: ArcaConfig, input: CheckoutInput) {
     const lineFor = (i: (typeof items)[number]) => ({
       serviceId: i.serviceId,
       productId: i.productId,
+      description: i.description,
+      customerPurchaseId: i.customerPurchaseId,
       quantity: i.quantity,
       unitPrice: i.unitPrice.toFixed(2),
       taxAmount: "0.00",

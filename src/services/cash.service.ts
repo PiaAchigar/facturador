@@ -59,7 +59,15 @@ export async function getDailyReport(db: Db, date: string) {
     if (labels.length) itemsByPayment.set(p.id, labels);
   }
 
-  const totalsByMethod = { cash: 0, bank_transfer: 0, mercadopago: 0 };
+  // débito y crédito desde la regla 5.10. Sin estas dos claves, un cobro con
+  // tarjeta no sumaba a ningún total y la rendición del día cerraba de menos.
+  const totalsByMethod = {
+    cash: 0,
+    bank_transfer: 0,
+    mercadopago: 0,
+    debit_card: 0,
+    credit_card: 0,
+  };
   let declared = 0;
   let undeclared = 0;
   let paidToProviders = 0;
@@ -99,6 +107,8 @@ export async function getDailyReport(db: Db, date: string) {
       cash: round(totalsByMethod.cash),
       bank_transfer: round(totalsByMethod.bank_transfer),
       mercadopago: round(totalsByMethod.mercadopago),
+      debit_card: round(totalsByMethod.debit_card),
+      credit_card: round(totalsByMethod.credit_card),
     },
     declared: round(declared),
     undeclared: round(undeclared),
