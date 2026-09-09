@@ -37,9 +37,25 @@ describe("estadoDeSesion", () => {
     ).toBe("disponible");
   });
 
-  it("un turno con ausente también la devuelve a disponible", () => {
+  it("un ausente PIERDE la sesión: no vuelve a disponible", () => {
+    // Regla de Laura (2026-09-09): la clienta que no viene pierde la sesión y
+    // no la puede reagendar. El turno ocupó una hora que nadie más pudo usar.
     expect(
       estadoDeSesion({ ...libre, appointmentId: "a1", appointmentStatus: "no_show" }, VIGENTE, AHORA),
+    ).toBe("perdida");
+  });
+
+  it("una sesión perdida sigue perdida aunque el pack venza", () => {
+    // Ya pasó. El vencimiento posterior no lo cambia, igual que con consumida.
+    expect(
+      estadoDeSesion({ ...libre, appointmentId: "a1", appointmentStatus: "no_show" }, VENCIDA, AHORA),
+    ).toBe("perdida");
+  });
+
+  it("cancelar el turno SÍ la devuelve: se avisó", () => {
+    // La diferencia con el ausente es avisar. Un turno cancelado se reagenda.
+    expect(
+      estadoDeSesion({ ...libre, appointmentId: "a1", appointmentStatus: "cancelled" }, VIGENTE, AHORA),
     ).toBe("disponible");
   });
 
@@ -85,7 +101,19 @@ describe("resumenDeCompra", () => {
 
   it("cuenta cada estado por separado", () => {
     const r = resumenDeCompra(compra, cuatro, [], AHORA);
-    expect(r).toMatchObject({ consumidas: 1, agendadas: 1, disponibles: 2, vencidas: 0 });
+    expect(r).toMatchObject({ consumidas: 1, agendadas: 1, disponibles: 2, vencidas: 0, perdidas: 0 });
+  });
+
+  it("las perdidas se cuentan aparte y suman a las usadas", () => {
+    // Aparte porque Laura las va a querer ver: no es lo mismo un tratamiento
+    // hecho que una clienta que no vino.
+    const conAusente = [
+      { consumedAt: AHORA, appointmentId: "a1", appointmentStatus: "completed" },
+      { consumedAt: null, appointmentId: "a2", appointmentStatus: "no_show" },
+      libre,
+    ];
+    const r = resumenDeCompra(compra, conAusente, [], AHORA);
+    expect(r).toMatchObject({ consumidas: 1, perdidas: 1, usadas: 2, disponibles: 1 });
   });
 
   it("el saldo es el precio final menos lo pagado", () => {

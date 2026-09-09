@@ -8,7 +8,7 @@
  * Lógica pura, sin base de datos.
  */
 
-export type EstadoSesion = "consumida" | "agendada" | "vencida" | "disponible";
+export type EstadoSesion = "consumida" | "perdida" | "agendada" | "vencida" | "disponible";
 
 export type SesionCruda = {
   consumedAt: Date | null;
@@ -22,19 +22,32 @@ export type VigenciaCompra = {
   cancelledAt: Date | null;
 };
 
-/** Un turno cancelado o con ausente libera la sesión: nadie va a venir. */
-const NO_RESERVA = new Set(["cancelled", "no_show"]);
+/**
+ * Un turno CANCELADO libera la sesión: se avisó, se reagenda, no se perdió.
+ *
+ * El ausente NO está acá y es a propósito — ver `estadoDeSesion`.
+ */
+const NO_RESERVA = new Set(["cancelled"]);
+
+/**
+ * La clienta no vino y no avisó: la sesión se pierde y no se reagenda (regla
+ * de Laura, 2026-09-09). El turno ocupó una hora de agenda que nadie más pudo
+ * usar, así que esa sesión ya se cobró.
+ */
+const AUSENTE = "no_show";
 
 /**
  * El orden importa y no es alfabético:
  *
  * 1. **Consumida** gana sobre todo. La sesión se usó cuando el pack estaba
  *    vigente; que hoy esté vencido no borra que se hizo.
- * 2. **Agendada** gana sobre vencida. El turno existe y alguien va a venir:
+ * 2. **Perdida** — la clienta no vino. Gana sobre vencida por lo mismo que
+ *    consumida: ya pasó, y el vencimiento posterior no lo cambia.
+ * 3. **Agendada** gana sobre vencida. El turno existe y alguien va a venir:
  *    decirle "vencida" haría que se la ignore y la clienta llegue a un turno
  *    que nadie esperaba.
- * 3. **Vencida** para lo que quedó sin usar, si el pack venció o se canceló.
- * 4. **Disponible** en cualquier otro caso.
+ * 4. **Vencida** para lo que quedó sin usar, si el pack venció o se canceló.
+ * 5. **Disponible** en cualquier otro caso.
  */
 export function estadoDeSesion(
   sesion: SesionCruda,
@@ -42,6 +55,10 @@ export function estadoDeSesion(
   ahora: Date,
 ): EstadoSesion {
   if (sesion.consumedAt) return "consumida";
+
+  // No vino: la sesión se perdió. NO vuelve a disponible — el turno ocupó una
+  // hora que nadie más pudo usar.
+  if (sesion.appointmentStatus === AUSENTE) return "perdida";
 
   const reservada =
     sesion.appointmentId != null && !NO_RESERVA.has(sesion.appointmentStatus ?? "");
@@ -54,6 +71,10 @@ export function estadoDeSesion(
 
 export type ResumenCompra = {
   consumidas: number;
+  /** Sesiones que la clienta perdió por no venir. */
+  perdidas: number;
+  /** Consumidas + perdidas: lo que ya no está disponible y ya se cobró. */
+  usadas: number;
   agendadas: number;
   disponibles: number;
   vencidas: number;
@@ -75,7 +96,7 @@ export function resumenDeCompra(
   pagos: readonly number[],
   ahora: Date,
 ): ResumenCompra {
-  const conteo = { consumida: 0, agendada: 0, vencida: 0, disponible: 0 };
+  const conteo = { consumida: 0, perdida: 0, agendada: 0, vencida: 0, disponible: 0 };
   for (const s of sesiones) conteo[estadoDeSesion(s, compra, ahora)] += 1;
 
   const pagado = pagos.reduce((a, b) => a + b, 0);
@@ -85,6 +106,8 @@ export function resumenDeCompra(
 
   return {
     consumidas: conteo.consumida,
+    perdidas: conteo.perdida,
+    usadas: conteo.consumida + conteo.perdida,
     agendadas: conteo.agendada,
     disponibles: conteo.disponible,
     vencidas: conteo.vencida,

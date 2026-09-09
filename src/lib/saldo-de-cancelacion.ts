@@ -29,7 +29,13 @@ export type CompraCancelada = {
    *  entregada, y si el pago fue completo (que habilita la devolución). */
   finalAmount: number;
   sessionsTotal: number;
-  /** Sesiones con `consumed_at`. Las agendadas NO cuentan: no se hicieron. */
+  /**
+   * Sesiones ya USADAS: las consumidas más las PERDIDAS por ausente. Las dos se
+   * cobraron — una porque el tratamiento se hizo, la otra porque el turno
+   * ocupó una hora que nadie más pudo usar (regla de Laura, 2026-09-09).
+   *
+   * Las agendadas NO cuentan: todavía no pasó nada.
+   */
   consumidas: number;
 };
 

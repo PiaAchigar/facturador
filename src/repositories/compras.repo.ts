@@ -231,18 +231,25 @@ async function acreditarSobranteDeCompra(
       and(eq(payments.customerPurchaseId, compra.id), eq(payments.status, "confirmed")),
     );
 
+  // Usadas = consumidas + PERDIDAS. Una clienta que no vino perdió la sesión y
+  // su plata (regla de Laura, 2026-09-09): devolverla como saldo a favor sería
+  // premiar el ausente, que es justo lo que la regla evita.
   const [usadas] = await tx
     .select({
-      consumidas: sql<number>`count(*) filter (where ${customerPurchaseSession.consumedAt} is not null)`,
+      total: sql<number>`count(*) filter (
+        where ${customerPurchaseSession.consumedAt} is not null
+           or ${appointments.status} = 'no_show'
+      )`,
     })
     .from(customerPurchaseSession)
+    .leftJoin(appointments, eq(appointments.id, customerPurchaseSession.appointmentId))
     .where(eq(customerPurchaseSession.customerPurchaseId, compra.id));
 
   const monto = saldoAAcreditar({
     pagado: Number(cobrado?.total ?? 0),
     finalAmount: Number(compra.finalAmount ?? 0),
     sessionsTotal: compra.sessionsTotal ?? 0,
-    consumidas: Number(usadas?.consumidas ?? 0),
+    consumidas: Number(usadas?.total ?? 0),
   });
   if (monto <= 0) return 0;
 
