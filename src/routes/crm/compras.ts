@@ -138,6 +138,8 @@ const compraBody = z
     promotionId: z.string().uuid().nullish(),
     expiresAt: z.string().datetime({ offset: true }).nullish(),
     notes: z.string().max(2000).nullish(),
+    /** Cuánto del saldo a favor aplicar. El backend lo topea igual. */
+    usarSaldo: z.number().nonnegative().nullish(),
   })
   .refine(
     (v) => [v.comboId, v.serviceId, v.depilationComboId].filter(Boolean).length === 1,

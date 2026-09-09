@@ -139,6 +139,8 @@ export type CreditMovementReason =
   | "appointment_cancelled"
   /** Se canceló un pack/combo/servicio comprado y quedó a favor lo no usado. */
   | "purchase_cancelled"
+  /** Se usó el saldo para comprar otro pack/combo/servicio. */
+  | "purchase_paid_with_credit"
   | "deposit_paid_with_credit"
   | "manual_adjustment";
 

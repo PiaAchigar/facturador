@@ -11,7 +11,8 @@ import {
 import { estadoDeSesion, resumenDeCompra, type EstadoSesion } from "../lib/compras";
 import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-borrado";
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
-import { creditCustomer } from "./customers.repo";
+import { planDePagoConSaldo } from "../lib/pago-con-saldo";
+import { creditCustomer, debitCustomerCredit, getCustomerById } from "./customers.repo";
 
 const compraFields = {
   id: customerPurchase.id,
@@ -45,6 +46,11 @@ export type CompraInput = {
   promotionId?: string | null;
   expiresAt?: Date | null;
   notes?: string | null;
+  /**
+   * Cuánto del saldo a favor de la clienta se aplica a esta compra. `null` o
+   * ausente = no usar saldo. Se topea contra lo que hay y contra el precio.
+   */
+  usarSaldo?: number | null;
 };
 
 const dec = (n: number) => String(n);
@@ -90,8 +96,66 @@ export async function createCompra(db: Db, input: CompraInput) {
         sessionNumber: i + 1,
       })),
     );
-    return compra;
+
+    const conSaldo = await aplicarSaldoAFavor(tx, compra.id, input);
+    return { ...compra, pagadoConSaldo: conSaldo };
   });
+}
+
+/**
+ * Aplica el saldo a favor de la clienta a una compra recién creada.
+ *
+ * El saldo aplicado se registra como un `payments` CONFIRMADO. Sin eso la
+ * compra diría "Debe $166.000" con la plata ya puesta: el saldo es la única
+ * definición del saldo pendiente (`final_amount − Σ pagos confirmados`), así
+ * que lo que no está ahí no existe.
+ *
+ * ⚠️ **`isDeclared: false`.** El saldo NO es ingreso nuevo: entró y se declaró
+ * cuando se cobró la compra original. Contarlo otra vez inflaría la caja del
+ * día con plata que nunca volvió a entrar. Mismo criterio que las señas
+ * pagadas con saldo (`deposits.service.ts`).
+ *
+ * Devuelve cuánto se aplicó, 0 si nada.
+ */
+async function aplicarSaldoAFavor(tx: Db, compraId: string, input: CompraInput): Promise<number> {
+  if (!input.usarSaldo || input.usarSaldo <= 0) return 0;
+
+  const cliente = await getCustomerById(tx, input.customerId);
+  if (!cliente) throw new Error("No encontramos la cuenta de esta clienta");
+
+  const plan = planDePagoConSaldo({
+    aPagar: input.finalAmount,
+    saldoDisponible: Number(cliente.creditBalance ?? 0),
+    usar: input.usarSaldo,
+  });
+  if (plan.conSaldo <= 0) return 0;
+
+  const ahora = new Date();
+  const [pago] = await tx
+    .insert(payments)
+    .values({
+      customerId: input.customerId,
+      customerPurchaseId: compraId,
+      amount: dec(plan.conSaldo),
+      paymentMethod: "credit",
+      status: "confirmed",
+      paymentDate: ahora,
+      isDeclared: false,
+      notes: `Pagado con saldo a favor — ${input.description}`,
+      confirmedAt: ahora,
+    })
+    .returning({ id: payments.id });
+
+  // Si no alcanza acá, reventa la transacción entera y la compra no se crea.
+  // Mejor eso que una venta con un pago que el saldo nunca respaldó.
+  const ok = await debitCustomerCredit(tx, input.customerId, plan.conSaldo, {
+    reason: "purchase_paid_with_credit",
+    paymentId: pago?.id ?? null,
+    notes: `Compra de "${input.description}"`,
+  });
+  if (!ok) throw new Error("El saldo a favor de la clienta no alcanza para esta compra");
+
+  return plan.conSaldo;
 }
 
 export type SesionLeida = {
