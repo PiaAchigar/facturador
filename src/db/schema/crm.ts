@@ -77,6 +77,10 @@ export const customerCreditMovements = pgTable("customer_credit_movements", {
    *  esa plata vino de un pack pagado entero —devolvible— o de una seña, y lo
    *  que evita devolver dos veces la misma compra. */
   customerPurchaseId: uuid("customer_purchase_id"),
+  /** Hasta cuándo se puede usar esta acreditación (1.47.0). NULL = no vence.
+   *  Se guarda por movimiento y no se calcula: si mañana cambia la política,
+   *  la plata ya acreditada mantiene el plazo que se le prometió. */
+  expiresAt: timestamp("expires_at"),
   notes: text("notes"),
   createdAt: createdAt(),
 });

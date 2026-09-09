@@ -6,6 +6,7 @@ import { channelsRouter } from "./channels";
 import { contactsRouter } from "./contacts";
 import { conversationsRouter } from "./conversations";
 import { comprasRouter } from "./compras";
+import { saldosRouter } from "./saldos";
 import { dealsRouter } from "./deals";
 import type { AppBindings, Variables } from "../../env";
 
@@ -16,6 +17,8 @@ crm.route("/deals", dealsRouter);
 // Compras: vender packs/combos/servicios que quedan pendientes (1.45.0).
 // Sus rutas ya traen el prefijo completo (/customers/:id/purchases, /purchases).
 crm.route("/", comprasRouter);
+// Saldo a favor vencido: a quién y cuánto, y pasarlo a caja (1.47.0).
+crm.route("/credits", saldosRouter);
 crm.route("/channels", channelsRouter);
 crm.route("/conversations", conversationsRouter);
 crm.route("/automations", automationsRouter);

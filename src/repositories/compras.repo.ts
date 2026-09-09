@@ -14,6 +14,7 @@ import { estadoDeSesion, resumenDeCompra, type EstadoSesion } from "../lib/compr
 import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-borrado";
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
 import { planDePagoConSaldo } from "../lib/pago-con-saldo";
+import { vencimientoPara } from "../lib/vencimiento-de-saldo";
 import {
   montoADevolver,
   razonesParaNoDevolver,
@@ -346,9 +347,12 @@ async function acreditarSobranteDeCompra(
   });
   if (monto <= 0) return 0;
 
+  const ahora = new Date();
   await creditCustomer(tx, compra.customerId, monto, {
     reason: "purchase_cancelled",
     customerPurchaseId: compra.id,
+    // La clienta tiene 3 meses para usarlo en otro tratamiento.
+    expiresAt: vencimientoPara(ahora),
     notes: `Cancelación de "${(compra as { description?: string | null }).description ?? "una compra"}"`,
   });
   return monto;

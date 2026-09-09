@@ -15,6 +15,8 @@ import {
   trainingEnrollments,
   trainingSubscriptions,
 } from "../db/schema";
+import { cashRegister } from "../db/schema";
+import { lotesDeSaldo } from "../lib/vencimiento-de-saldo";
 
 const customerSummary = {
   id: customers.id,
@@ -143,11 +145,15 @@ export type CreditMovementReason =
   | "purchase_paid_with_credit"
   /** Se le devolvió la plata en mano y salió de la caja. */
   | "refunded"
+  /** Se le venció el plazo para usarlo y pasó a la caja del local. */
+  | "expired"
   | "deposit_paid_with_credit"
   | "manual_adjustment";
 
 type CreditContext = {
   reason: CreditMovementReason;
+  /** Hasta cuándo se puede usar. Sólo tiene sentido al acreditar. */
+  expiresAt?: Date | null;
   appointmentId?: string | null;
   paymentId?: string | null;
   customerPurchaseId?: string | null;
@@ -206,6 +212,7 @@ async function insertCreditMovement(
     appointmentId: ctx.appointmentId ?? null,
     paymentId: ctx.paymentId ?? null,
     customerPurchaseId: ctx.customerPurchaseId ?? null,
+    expiresAt: ctx.expiresAt ?? null,
     notes: ctx.notes ?? null,
   });
 }
@@ -309,4 +316,130 @@ export async function getClientDeleteImpact(db: Db, contactId: string) {
       analyticsEvents: events.length,
     },
   };
+}
+
+/**
+ * Quiénes tienen saldo a favor VENCIDO, y cuánto.
+ *
+ * Trae el libro entero de cada cliente con saldo y lo reparte con
+ * `lotesDeSaldo`: no alcanza con mirar las acreditaciones viejas, porque la
+ * clienta pudo haber gastado parte y lo que gastó no vence.
+ *
+ * Sólo mira a los que hoy tienen saldo > 0: si el saldo es cero no hay nada
+ * que vencer, por vieja que sea la acreditación.
+ */
+export async function listSaldosVencidos(db: Db, ahora = new Date()) {
+  const conSaldo = await db
+    .select({
+      customerId: customers.id,
+      nombre: contacts.name,
+      contactId: contacts.id,
+      creditBalance: customers.creditBalance,
+    })
+    .from(customers)
+    .leftJoin(contacts, eq(contacts.id, customers.contactId))
+    .where(sql`${customers.creditBalance} > 0`);
+
+  if (conSaldo.length === 0) return [];
+
+  const movimientos = await db
+    .select({
+      customerId: customerCreditMovements.customerId,
+      amount: customerCreditMovements.amount,
+      createdAt: customerCreditMovements.createdAt,
+      expiresAt: customerCreditMovements.expiresAt,
+      notes: customerCreditMovements.notes,
+    })
+    .from(customerCreditMovements)
+    .where(
+      inArray(
+        customerCreditMovements.customerId,
+        conSaldo.map((c) => c.customerId),
+      ),
+    );
+
+  const salida = [];
+  for (const cliente of conSaldo) {
+    const suyos = movimientos
+      .filter((m) => m.customerId === cliente.customerId)
+      .map((m) => ({
+        amount: Number(m.amount),
+        createdAt: m.createdAt ?? new Date(0),
+        expiresAt: m.expiresAt,
+        notes: m.notes,
+      }));
+    const estado = lotesDeSaldo(suyos, ahora);
+    if (estado.vencido <= 0) continue;
+
+    salida.push({
+      customerId: cliente.customerId,
+      contactId: cliente.contactId,
+      nombre: cliente.nombre,
+      vencido: estado.vencido,
+      vigente: estado.vigente,
+      // De dónde salió cada peso vencido. Es lo que hace entendible el
+      // movimiento de caja meses después.
+      origenes: estado.lotesVencidos.map((l) => ({
+        monto: l.restante,
+        acreditadoEl: l.acreditadoEl,
+        venceEl: l.venceEl,
+        detalle: l.notes ?? null,
+      })),
+    });
+  }
+  return salida.sort((a, b) => b.vencido - a.vencido);
+}
+
+/**
+ * Da por vencido el saldo de una clienta y lo pasa a la caja del local, EN UNA
+ * SOLA transacción.
+ *
+ * El movimiento negativo en el libro es lo que evita cobrarlo dos veces: la
+ * corrida siguiente lo ve como consumo y el lote deja de estar vencido.
+ *
+ * ⚠️ El movimiento de caja es un INGRESO del día de hoy, y hay una salvedad
+ * contable que Laura decidió asumir (2026-09-09): esa plata YA entró a la caja
+ * el día que la clienta pagó la compra original, y el sistema nunca la
+ * descontó al cancelarla. Anotarla otra vez acá la cuenta dos veces en los
+ * totales del año. Se hace igual porque Laura quiere ver el movimiento el día
+ * que vence, con el detalle de dónde vino. Si algún día se quiere el número
+ * contable puro, se saca este insert y el resto sigue funcionando igual.
+ */
+export async function vencerSaldoDeCliente(
+  db: Db,
+  customerId: string,
+  ahora = new Date(),
+): Promise<{ monto: number; detalle: string } | null> {
+  const vencidos = await listSaldosVencidos(db, ahora);
+  const mio = vencidos.find((v) => v.customerId === customerId);
+  if (!mio || mio.vencido <= 0) return null;
+
+  const origen = mio.origenes
+    .map((o) => o.detalle ?? "saldo a favor")
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .join(" · ");
+  const detalle = `Saldo a favor vencido — ${mio.nombre ?? "cliente"} (${origen})`;
+
+  await db.transaction(async (tx) => {
+    const ok = await debitCustomerCredit(tx, customerId, mio.vencido, {
+      reason: "expired",
+      notes: detalle,
+    });
+    // Si el saldo cambió entre la lectura y esta línea (la clienta lo usó en
+    // una compra), el WHERE no matchea y se cae todo. Sin esto quedaría un
+    // ingreso de caja sin respaldo.
+    if (!ok) throw new Error("El saldo cambió mientras se vencía. Probá de nuevo.");
+
+    await tx.insert(cashRegister).values({
+      amount: mio.vencido.toFixed(2),
+      source: "other",
+      description: detalle,
+      // No es una venta nueva: es plata que ya estaba y quedó en la casa.
+      isDeclared: false,
+      status: "recorded",
+      registrationDate: ahora,
+    });
+  });
+
+  return { monto: mio.vencido, detalle };
 }
