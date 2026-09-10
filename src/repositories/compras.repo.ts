@@ -15,6 +15,7 @@ import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
 import { planDePagoConSaldo } from "../lib/pago-con-saldo";
 import { vencimientoPara } from "../lib/vencimiento-de-saldo";
+import { vencimientoHeredado } from "../lib/herencia-de-vencimiento";
 import {
   montoADevolver,
   razonesParaNoDevolver,
@@ -358,11 +359,36 @@ async function acreditarSobranteDeCompra(
   if (monto <= 0) return 0;
 
   const ahora = new Date();
+
+  // Si la compra se pagó con saldo a favor, la plata vuelve con la fecha que
+  // YA TENÍA. Cancelar no estira plazos (regla de Pia, 2026-09-10): con tres
+  // meses nuevos, comprar algo y arrepentirse limpiaba el vencimiento —a Sofía
+  // le convirtió $80.000 vencidos en plata fresca sin que nadie lo buscara—.
+  const movimientos = await tx
+    .select({
+      amount: customerCreditMovements.amount,
+      createdAt: customerCreditMovements.createdAt,
+      expiresAt: customerCreditMovements.expiresAt,
+      customerPurchaseId: customerCreditMovements.customerPurchaseId,
+    })
+    .from(customerCreditMovements)
+    .where(eq(customerCreditMovements.customerId, compra.customerId));
+
+  const heredado = vencimientoHeredado(
+    movimientos.map((m) => ({
+      amount: Number(m.amount),
+      createdAt: m.createdAt ?? new Date(0),
+      expiresAt: m.expiresAt,
+      customerPurchaseId: m.customerPurchaseId,
+    })),
+    compra.id,
+  );
+
   await creditCustomer(tx, compra.customerId, monto, {
     reason: "purchase_cancelled",
     customerPurchaseId: compra.id,
-    // La clienta tiene 3 meses para usarlo en otro tratamiento.
-    expiresAt: vencimientoPara(ahora),
+    // Hereda si vino de saldo; si se pagó con plata de verdad, los 3 meses.
+    expiresAt: heredado ?? vencimientoPara(ahora),
     notes: `Cancelación de "${(compra as { description?: string | null }).description ?? "una compra"}"`,
   });
   return monto;
