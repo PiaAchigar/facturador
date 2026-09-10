@@ -305,14 +305,20 @@ comprasRouter.post(
     const compra = await getCompraById(db, id);
     if (!compra) throw notFound("Compra");
 
-    const { motivos, monto } = await devolverPlataDeCompra(db, id, {
-      descripcion: compra.description ?? "una compra",
-      notas: c.req.valid("json")?.notes,
-    });
+    const { motivos, monto, notaDeCreditoId, borradorAnulado } = await devolverPlataDeCompra(
+      db,
+      id,
+      {
+        descripcion: compra.description ?? "una compra",
+        notas: c.req.valid("json")?.notes,
+      },
+    );
     if (motivos.length > 0) {
       throw badRequest(`No se puede devolver la plata porque ${motivos.join(", ")}.`);
     }
-    return c.json({ monto });
+    // El front avisa qué quedó pendiente: si la compra estaba facturada en
+    // ARCA, hay una nota de crédito en borrador esperando en el facturador.
+    return c.json({ monto, notaDeCreditoId, borradorAnulado });
   },
 );
 

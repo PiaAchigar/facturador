@@ -156,6 +156,14 @@ export async function emitInvoice(db: Db, env: AppBindings, invoiceId: string) {
   // Cada factura se emite con SU facturador (el elegido en la cobranza), no con
   // uno global: distinto CUIT, certificado, punto de venta y numeración.
   const arca = await resolveArcaConfig(db, env, invoice.issuerId);
+
+  // Una NOTA DE CRÉDITO se emite por otra vía de ARCA: otro tipo de
+  // comprobante (C=13 contra 11) y otra numeración. El botón de la pantalla es
+  // el mismo —"emitir un borrador"— pero lo que se manda no lo es.
+  if (invoice.creditNoteOf) {
+    return emitirNotaDeCredito(db, invoice, arca);
+  }
+
   const invoiceNumber = await getNextInvoiceNumber(
     db,
     invoice.invoiceType ?? arca.invoiceType,
@@ -234,6 +242,68 @@ export async function emitBatch(db: Db, env: AppBindings, invoiceIds?: string[])
     }
   }
   return { results };
+}
+
+/**
+ * Manda a ARCA una nota de crédito que estaba en borrador.
+ *
+ * Es la contracara de `emitInvoice` y no una variante: la nota se emite contra
+ * el tipo y el número de la factura ORIGINAL, y su monto puede ser menor —una
+ * devolución parcial devuelve sólo las sesiones sin usar—.
+ *
+ * No toca el estado de la factura original: sigue emitida, porque parte de esa
+ * venta sigue en pie. Anularla entera es otra acción ("Anular comprobante").
+ */
+async function emitirNotaDeCredito(
+  db: Db,
+  nota: NonNullable<Awaited<ReturnType<typeof getInvoiceById>>>,
+  arca: Awaited<ReturnType<typeof resolveArcaConfig>>,
+) {
+  const original = await getInvoiceById(db, nota.creditNoteOf!);
+  if (!original) throw notFound("La factura original de esta nota de crédito");
+  if (original.invoiceNumber == null) {
+    throw conflict(
+      "La factura original todavía no se emitió en ARCA, así que no hay comprobante que acreditar.",
+    );
+  }
+
+  const result = await arca.client.issueCreditNote({
+    pointOfSale: arca.pointOfSale,
+    originalInvoiceType: original.invoiceType ?? arca.invoiceType,
+    originalInvoiceNumber: original.invoiceNumber,
+    totalAmount: Number(nota.totalAmount ?? 0),
+    reason: nota.description ?? undefined,
+  });
+
+  if (!result.ok) {
+    await insertArcaLog(db, {
+      invoiceId: nota.id,
+      arcaResponseCode: result.errorCode,
+      arcaFullResponse: result.rawResponse,
+      retryCount: 1,
+      lastRetryAt: new Date(),
+      status: "failed",
+    });
+    throw badGateway(`ARCA rechazó la nota de crédito: ${result.errorMessage}`);
+  }
+
+  return db.transaction(async (tx) => {
+    const updated = await updateInvoice(tx, nota.id, {
+      invoiceNumber: result.invoiceNumber,
+      status: "emitted",
+      emittedAt: new Date(),
+    });
+    await insertArcaLog(tx, {
+      invoiceId: nota.id,
+      cae: result.cae,
+      caeExpiry: result.caeExpiry,
+      arcaResponseCode: "ok",
+      arcaFullResponse: result.rawResponse,
+      retryCount: 0,
+      status: "success",
+    });
+    return updated!;
+  });
 }
 
 /**

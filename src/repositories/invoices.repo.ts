@@ -22,6 +22,9 @@ const invoiceSummary = {
   adjustmentAmount: invoices.adjustmentAmount,
   totalAmount: invoices.totalAmount,
   status: invoices.status,
+  /** El concepto del comprobante. En una nota de crédito es el motivo que
+   *  viaja a ARCA, así que hace falta acá y no sólo en la ficha. */
+  description: invoices.description,
   invoiceDate: invoices.invoiceDate,
   emittedAt: invoices.emittedAt,
   customerId: invoices.customerId,
@@ -31,6 +34,10 @@ const invoiceSummary = {
   issuerId: invoices.issuerId,
   issuerName: arcaIssuers.name,
   issuerCuit: arcaIssuers.cuit,
+  /** No NULL = esta fila es una nota de crédito, no una factura (1.49.0). Va
+   *  en el resumen compartido para que la lista y la ficha puedan
+   *  distinguirlas sin una consulta aparte. */
+  creditNoteOf: invoices.creditNoteOf,
 };
 
 export async function listInvoices(

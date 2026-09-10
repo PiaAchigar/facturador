@@ -6,6 +6,7 @@ import {
   customerCreditMovements,
   customerPurchase,
   customerPurchaseSession,
+  invoices,
   lineItems,
   payments,
   promotions,
@@ -15,6 +16,8 @@ import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
 import { planDePagoConSaldo } from "../lib/pago-con-saldo";
 import { vencimientoPara } from "../lib/vencimiento-de-saldo";
+import { repartirDevolucion } from "../lib/devolucion-declarada";
+import { getInvoiceById, updateInvoice } from "./invoices.repo";
 import { vencimientoHeredado } from "../lib/herencia-de-vencimiento";
 import {
   montoADevolver,
@@ -222,6 +225,7 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
       .select({
         customerPurchaseId: payments.customerPurchaseId,
         amount: payments.amount,
+        invoiceId: payments.invoiceId,
       })
       .from(payments)
       .where(
@@ -243,6 +247,28 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
       ),
   ]);
 
+  // Notas de crédito todavía en borrador. La emite Laura desde el facturador,
+  // pero el CRM tiene que poder decir que falta: si la clienta llama
+  // preguntando por su devolución, quien atiende no debería abrir otra app.
+  const facturasDeCompras = pagos
+    .map((p) => p.invoiceId)
+    .filter((v): v is string => v != null);
+  const notasPendientes =
+    facturasDeCompras.length > 0
+      ? await db
+          .select({ creditNoteOf: invoices.creditNoteOf })
+          .from(invoices)
+          .where(
+            and(
+              inArray(invoices.creditNoteOf, facturasDeCompras),
+              eq(invoices.status, "draft"),
+            ),
+          )
+      : [];
+  const facturasConNotaPendiente = new Set(
+    notasPendientes.map((n) => n.creditNoteOf).filter((v): v is string => v != null),
+  );
+
   return compras.map((c) => {
     const mias = sesiones.filter((s) => s.customerPurchaseId === c.id);
     const vigencia = { expiresAt: c.expiresAt, cancelledAt: c.cancelledAt };
@@ -254,12 +280,20 @@ export async function listComprasDeCliente(db: Db, customerId: string, ahora = n
     );
     const misDevoluciones = devoluciones.filter((d) => d.customerPurchaseId === c.id);
     const devuelto = misDevoluciones.reduce((a, d) => a + Math.abs(Number(d.amount)), 0);
+    const notaDeCreditoPendiente = pagos.some(
+      (p) =>
+        p.customerPurchaseId === c.id &&
+        p.invoiceId != null &&
+        facturasConNotaPendiente.has(p.invoiceId),
+    );
 
     return {
       ...c,
       baseAmount: Number(c.baseAmount),
       discountedAmount: Number(c.discountedAmount),
       finalAmount: Number(c.finalAmount),
+      /** La devolución exigía nota de crédito y todavía está en borrador. */
+      notaDeCreditoPendiente,
       // La pantalla necesita saberlo para no ofrecer devolver dos veces y para
       // mostrar que esta compra ya se cerró con plata en mano.
       devuelta: misDevoluciones.length > 0,
@@ -550,7 +584,14 @@ export async function devolverPlataDeCompra(
   db: Db,
   id: string,
   ctx: { descripcion: string; notas?: string | null },
-): Promise<{ motivos: string[]; monto: number }> {
+): Promise<{
+  motivos: string[];
+  monto: number;
+  /** La nota de crédito que quedó en borrador esperando a Laura, si hizo falta. */
+  notaDeCreditoId?: string | null;
+  /** true si la factura era borrador y se canceló sola. */
+  borradorAnulado?: boolean;
+}> {
   const estado = await getEstadoDeDevolucion(db, id);
   if (!estado) return { motivos: ["la compra no existe"], monto: 0 };
 
@@ -567,6 +608,32 @@ export async function devolverPlataDeCompra(
     .limit(1);
   if (!compra?.customerId) return { motivos: ["la compra no tiene clienta"], monto: 0 };
 
+  // Cómo entró la plata decide cómo sale. Antes la devolución se marcaba
+  // SIEMPRE declarada, apoyada en que "ya se declaró al cobrar" — y eso no
+  // siempre es cierto: un cobro sin factura entra como recibo, no declarado.
+  // Devolverlo declarado dejaba la rendición con un egreso declarado que
+  // ningún ingreso declarado compensaba (lo notó Pia, 2026-09-10).
+  const cobros = await db
+    .select({
+      amount: payments.amount,
+      isDeclared: payments.isDeclared,
+      invoiceId: payments.invoiceId,
+    })
+    .from(payments)
+    .where(and(eq(payments.customerPurchaseId, id), eq(payments.status, "confirmed")));
+
+  const { declarado: montoDeclarado, noDeclarado: montoNoDeclarado } = repartirDevolucion(
+    monto,
+    cobros.map((p) => ({ amount: Number(p.amount), isDeclared: p.isDeclared })),
+  );
+
+  // La factura de la parte declarada. Es la que hay que acreditar.
+  const facturaId = cobros.find((p) => p.isDeclared && p.invoiceId)?.invoiceId ?? null;
+  const factura = facturaId ? await getInvoiceById(db, facturaId) : null;
+
+  let notaDeCreditoId: string | null = null;
+  let borradorAnulado = false;
+
   await db.transaction(async (tx) => {
     const ok = await debitCustomerCredit(tx, compra.customerId!, monto, {
       reason: "refunded",
@@ -578,22 +645,57 @@ export async function devolverPlataDeCompra(
     // esto quedaría un egreso de caja sin respaldo.
     if (!ok) throw new Error("El saldo a favor cambió mientras se devolvía. Probá de nuevo.");
 
-    await tx.insert(cashRegister).values({
-      // NEGATIVO: es plata que sale. Así lo entiende la rendición del día,
-      // que suma los movimientos manuales a la caja en efectivo.
-      amount: dec(-monto),
-      source: "refund",
-      description: `Devolución a cliente — ${ctx.descripcion}`,
-      // Sale de plata que ya se declaró al cobrar la compra, así que la
-      // devolución también se declara: si no, la rendición mostraría un
-      // ingreso declarado que nunca se compensa.
-      isDeclared: true,
-      status: "recorded",
-      registrationDate: new Date(),
-    });
+    // Una fila por cada mitad, como hace el cobro al partir un pago entre lo
+    // facturable y lo que no. Las de $0 no se escriben.
+    for (const [importe, declarado] of [
+      [montoDeclarado, true],
+      [montoNoDeclarado, false],
+    ] as const) {
+      if (importe <= 0) continue;
+      await tx.insert(cashRegister).values({
+        // NEGATIVO: es plata que sale. Así lo entiende la rendición del día,
+        // que suma los movimientos manuales a la caja en efectivo.
+        amount: dec(-importe),
+        source: "refund",
+        description: `Devolución a cliente — ${ctx.descripcion}`,
+        isDeclared: declarado,
+        status: "recorded",
+        registrationDate: new Date(),
+      });
+    }
+
+    if (factura && montoDeclarado > 0) {
+      if (factura.status === "draft") {
+        // Todavía no fue a ARCA: no existe fiscalmente, así que se cancela y
+        // listo. Decisión de Pia (2026-09-10): que no le quede a Laura un
+        // borrador fantasma esperando para emitir algo ya devuelto.
+        await updateInvoice(tx, factura.id, { status: "cancelled" });
+        borradorAnulado = true;
+      } else {
+        // Ya emitida: hace falta una NOTA DE CRÉDITO de verdad. Nace en
+        // borrador y Laura la emite desde Facturas cuando quiera, con el mismo
+        // botón que usa para los borradores de factura.
+        const [nota] = await tx
+          .insert(invoices)
+          .values({
+            customerId: compra.customerId,
+            issuerId: factura.issuerId,
+            invoiceType: factura.invoiceType,
+            subtotal: dec(montoDeclarado),
+            taxAmount: "0.00",
+            totalAmount: dec(montoDeclarado),
+            description: `Devolución — ${ctx.descripcion}`,
+            status: "draft",
+            creditNoteOf: factura.id,
+            invoiceDate: new Date(),
+          })
+          .returning({ id: invoices.id });
+        notaDeCreditoId = nota?.id ?? null;
+      }
+    }
   });
 
-  return { motivos: [], monto };
+  return { motivos: [], monto, notaDeCreditoId, borradorAnulado };
 }
 
 /** Lo efectivamente cobrado de una compra: la única definición del saldo. */

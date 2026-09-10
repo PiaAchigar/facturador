@@ -53,6 +53,11 @@ export const invoices = pgTable("invoices", {
   totalAmount: decimal("total_amount", { precision: 10, scale: 2 }),
   description: text("description"),
   status: varchar("status", { length: 50 }), // draft | emitted | paid | cancelled
+  /** Si no es NULL, esta fila es una NOTA DE CRÉDITO de la factura apuntada
+   *  (1.49.0). En ARCA una nota de crédito es un comprobante propio, con su
+   *  tipo (C=13) y su numeración, así que vive acá y no en una tabla aparte.
+   *  El monto puede ser menor al original: una devolución puede ser parcial. */
+  creditNoteOf: uuid("credit_note_of"),
   invoiceDate: timestamp("invoice_date"),
   dueDate: timestamp("due_date"),
   emittedAt: timestamp("emitted_at"),
