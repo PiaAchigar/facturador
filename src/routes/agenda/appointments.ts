@@ -10,6 +10,7 @@ import {
   rescheduleAppointment,
   updateAppointmentStatus,
 } from "../../services/appointments.service";
+import { queSeDescuenta } from "../../repositories/consumo.repo";
 import { listReschedules } from "../../repositories/appointment-reschedule.repo";
 import { getAppointmentById, getAppointmentDetail } from "../../repositories/appointments.repo";
 import { getDealByAppointmentId } from "../../repositories/deals.repo";
@@ -36,6 +37,36 @@ appointmentsRouter.get("/", requireAuth, zValidator("query", listQuery), async (
     })),
   );
 });
+
+/**
+ * Qué tiene la clienta a favor para este servicio, y qué se descontaría.
+ *
+ * La pantalla de turno nuevo la consulta al elegir clienta y servicio:
+ *
+ *   `ninguna`      no tiene nada: el turno se cobra aparte
+ *   `automatica`   una sola compra con sesiones libres → se descuenta sola
+ *   `elige_laura`  varias → la lista, ordenada por lo que vence antes
+ *
+ * ⚠️ Va registrada ANTES de `/:id`: Hono resuelve por orden, y al revés esta
+ * URL entraría por el comodín con id="consumible" y devolvería un 404. Mismo
+ * caso que `/admin/tarifarios` en las rutas de combos.
+ */
+appointmentsRouter.get(
+  "/consumible",
+  requireAuth,
+  zValidator(
+    "query",
+    z.object({
+      customerId: z.string().uuid({ message: "Falta la clienta" }),
+      serviceId: z.string().uuid({ message: "Falta el servicio" }),
+    }),
+  ),
+  async (c) => {
+    const db = createDb(c.env);
+    const { customerId, serviceId } = c.req.valid("query");
+    return c.json(await queSeDescuenta(db, customerId, serviceId, new Date()));
+  },
+);
 
 appointmentsRouter.get("/:id", requireAuth, async (c) => {
   const db = createDb(c.env);
@@ -86,6 +117,9 @@ const createBody = z.object({
   notes: z.string().max(1000).optional(),
   status: z.enum(["scheduled", "reserved"]).optional(),
   expiryMinutes: z.number().int().min(5).max(480).optional(),
+  /** La sesión del pack que este turno descuenta (V3). Sin esto, no descuenta
+   *  nada y el turno se cobra aparte, que es el caso más común. */
+  customerPurchaseSessionId: z.string().uuid().optional(),
   deposit: z
     .object({
       amount: z.number().positive(),

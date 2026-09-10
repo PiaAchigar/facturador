@@ -21,6 +21,7 @@ import { getActiveAgreement } from "../repositories/providers.repo";
 import { getServiceById } from "../repositories/services.repo";
 import { loadAvailabilityContext } from "./availability.service";
 import { consumirInsumos } from "./consumo.service";
+import { consumirSesionDelTurno, tomarSesion } from "../repositories/consumo.repo";
 import { registerDeposit, type DepositInput } from "./deposits.service";
 import type { ArcaConfig } from "../arca/factory";
 
@@ -36,6 +37,15 @@ export type CreateAppointmentInput = {
   expiryMinutes?: number; // solo para status='reserved'; default 60
   /** Seña cobrada al reservar: se factura a ARCA y queda a favor del cliente. */
   deposit?: DepositInput;
+  /**
+   * La sesión del pack que este turno descuenta (V3).
+   *
+   * Ausente = el turno no descuenta nada y se cobra aparte, que es el caso más
+   * común. La pantalla lo completa sola cuando la clienta tiene UNA sola compra
+   * con sesiones libres para este servicio; con varias, lo elige Laura
+   * (reglas §3.8).
+   */
+  customerPurchaseSessionId?: string;
 };
 
 export async function createAppointment(
@@ -141,6 +151,21 @@ export async function createAppointment(
       notes: input.notes ?? null,
     });
 
+    // Descontar la sesión del pack, si el turno viene atado a una compra.
+    //
+    // Va DENTRO de la transacción y con su propia guarda: entre que la pantalla
+    // preguntó qué había disponible y el momento de guardar, otra persona pudo
+    // haber agendado esa misma sesión. Sin el chequeo, la segunda pisaría a la
+    // primera y el pack quedaría con una sesión de más.
+    if (input.customerPurchaseSessionId) {
+      await tomarSesion(tx, input.customerPurchaseSessionId, {
+        appointmentId: appointment.id,
+        customerId: input.customerId,
+        serviceId: input.serviceId,
+        ahora: new Date(),
+      });
+    }
+
     if (input.deposit && arca) {
       await registerDeposit(tx, arca, {
         appointmentId: appointment.id,
@@ -204,6 +229,7 @@ export async function updateAppointmentStatus(
       Object.assign(values, snapshot);
     }
 
+
     // Al cancelar: si había una seña paga, se cancela el deal y se acredita
     // el saldo al cliente (no se pierde la plata — reglas_negocio §6.2).
     //
@@ -227,14 +253,22 @@ export async function updateAppointmentStatus(
     }
   }
 
-  // Al completar, el turno y el descuento de insumos pasan JUNTOS o no pasa
-  // ninguno: si el turno quedara completado y el descuento fallara, el stock
-  // mentiría para siempre y nadie se enteraría. `consumo` viaja al front para
-  // avisar si algún insumo quedó en negativo — no frena nada.
+  // Al completar, el turno, el descuento de insumos y el consumo de la sesión
+  // pasan JUNTOS o no pasa ninguno: si el turno quedara completado y el
+  // descuento fallara, el stock mentiría para siempre y nadie se enteraría, y
+  // si fallara el consumo la clienta se quedaría con una sesión que ya usó.
+  // `consumo` viaja al front para avisar si algún insumo quedó en negativo —
+  // no frena nada.
+  //
+  // El AUSENTE no escribe nada acá, y es a propósito: `estadoDeSesion()` ya lo
+  // deriva como "perdida" mirando el estado del turno (reglas §3.8). Así, si
+  // Laura marcó ausente por error y lo corrige, la sesión vuelve sola a estar
+  // disponible; con una columna escrita habría que acordarse de deshacerla.
   if (completando) {
     return db.transaction(async (tx) => {
       const updated = await updateAppointment(tx, id, values);
       const consumo = await consumirInsumos(tx, id, appt.serviceId);
+      await consumirSesionDelTurno(tx, id, new Date());
       return { ...updated, consumo };
     });
   }
