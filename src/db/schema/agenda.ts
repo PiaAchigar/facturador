@@ -505,6 +505,46 @@ export const combos = pgTable("combos", {
   isActive: boolean("is_active"),
   isVisibleWeb: boolean("is_visible_web"),
   displayOrder: integer("display_order"),
+  // ── Área, tipo y repetición (migración 1.50.0) ──────────────────────────
+  // El área se ELIGE al crear, no se deduce de los servicios: un combo vive en
+  // una sola, y combinar entre áreas es trabajo de PROMOS.
+  areaCategoryId: uuid("area_category_id"),
+  // 'combo' (varios servicios, una sesión de cada uno) | 'pack' (repetición).
+  kind: varchar("kind", { length: 10 }),
+  // Un pack que repite un COMBO apunta acá; uno que repite un SERVICIO suelto
+  // lo deja en NULL y lleva su único renglón en `combo_service`.
+  packOfComboId: uuid("pack_of_combo_id"),
+  // Cuántas veces se repite. Obligatorio si kind='pack', prohibido si 'combo'.
+  packSessions: integer("pack_sessions"),
+  // Descuento propio del pack. Van de a DOS o ninguno: NULL = "usá la política
+  // del área" (`area_pack_policy`), igual que hace `depilation_combo` con
+  // `depilation_pricing_config`.
+  packDiscountPercentage: integer("pack_discount_percentage"),
+  packRoundingBase: integer("pack_rounding_base"),
+  // true = los servicios se hacen en la MISMA visita (mismo día, no
+  // necesariamente pegados). Default false por decisión de Pia: si quien carga
+  // el combo se olvida del check, que quede la opción MÁS libre de agendar.
+  // Sólo tiene sentido en kind='combo'; un pack lo hereda del combo que apunta.
+  servicesTogether: boolean("services_together"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * El tarifario de packs de cada área (migración 1.50.0).
+ *
+ * Mismo trío que `depilation_pricing_config`, una fila por área. Es la política
+ * por defecto: un pack que no la siga lleva su propio descuento en `combos`.
+ * `politicaDePack()` de `pack-pricing.ts` consume esta forma tal cual.
+ *
+ * Depilación no tiene fila acá: usa su propia config.
+ */
+export const areaPackPolicy = pgTable("area_pack_policy", {
+  id: id(),
+  areaCategoryId: uuid("area_category_id"),
+  packSessions: integer("pack_sessions"),
+  packDiscountPercentage: integer("pack_discount_percentage"),
+  packRoundingBase: integer("pack_rounding_base"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
