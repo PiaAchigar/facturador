@@ -328,7 +328,19 @@ export async function getClientDeleteImpact(db: Db, contactId: string) {
  * Sólo mira a los que hoy tienen saldo > 0: si el saldo es cero no hay nada
  * que vencer, por vieja que sea la acreditación.
  */
-export async function listSaldosVencidos(db: Db, ahora = new Date()) {
+export async function listSaldosVencidos(
+  db: Db,
+  ahora = new Date(),
+  /**
+   * Incluir también los lotes ya perdonados.
+   *
+   * El aviso los excluye —para eso se perdonan—, pero "Pasar a caja" tiene que
+   * verlos: perdonar saca el aviso, NO traba la plata. Sin esta opción,
+   * ignorar era un camino de ida y la única forma de volver era editar la base
+   * a mano.
+   */
+  incluirPerdonados = false,
+) {
   const conSaldo = await db
     .select({
       customerId: customers.id,
@@ -373,13 +385,17 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
         notes: m.notes,
       }));
     const estado = lotesDeSaldo(suyos, ahora);
-    if (estado.vencido <= 0) continue;
+    const lotes = incluirPerdonados
+      ? [...estado.lotesVencidos, ...estado.lotesIgnorados]
+      : estado.lotesVencidos;
+    const vencido = lotes.reduce((a, l) => a + l.restante, 0);
+    if (vencido <= 0) continue;
 
     salida.push({
       customerId: cliente.customerId,
       contactId: cliente.contactId,
       nombre: cliente.nombre,
-      vencido: estado.vencido,
+      vencido,
       vigente: estado.vigente,
       // De dónde salió cada peso vencido. Es lo que hace entendible el
       // movimiento de caja meses después.
@@ -387,8 +403,10 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
       // los dos números no coinciden y el cartel mostraba sólo el segundo. Sin
       // el primero, "$80.000" de una cancelación de $100.000 no se puede
       // reconstruir mirando la pantalla.
-      origenes: estado.lotesVencidos.map((l) => ({
+      origenes: lotes.map((l) => ({
         id: l.id ?? null,
+        /** No null = ya estaba perdonado y aparece igual porque se pidió. */
+        perdonadoEl: l.ignoradoEl ?? null,
         monto: l.restante,
         original: l.original,
         acreditadoEl: l.acreditadoEl,
@@ -455,7 +473,9 @@ export async function vencerSaldoDeCliente(
   customerId: string,
   ahora = new Date(),
 ): Promise<{ monto: number; detalle: string } | null> {
-  const vencidos = await listSaldosVencidos(db, ahora);
+  // `true`: incluye los perdonados. Laura puede cambiar de opinión sobre un
+  // saldo que había decidido dejarle a la clienta.
+  const vencidos = await listSaldosVencidos(db, ahora, true);
   const mio = vencidos.find((v) => v.customerId === customerId);
   if (!mio || mio.vencido <= 0) return null;
 

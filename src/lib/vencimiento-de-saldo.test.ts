@@ -200,6 +200,26 @@ describe("lotes perdonados", () => {
     expect(r.vencido).toBe(30000);
   });
 
+  /**
+   * De esta propiedad depende "Pasar a caja": junta los dos baldes para poder
+   * cobrar también lo perdonado. Si algún lote pasado de fecha no cayera en
+   * ninguno de los dos, esa plata quedaría trabada —sin aviso y sin forma de
+   * cobrarla—, que es exactamente el bug del 2026-09-10.
+   */
+  it("vencidos + perdonados son TODA la plata pasada de fecha", () => {
+    const r = lotesDeSaldo(
+      [
+        perdonada("2026-01-01T10:00:00Z", 80000, "2026-04-01T10:00:00Z", "2026-05-01T10:00:00Z"),
+        acredita("2026-02-01T10:00:00Z", 30000, "2026-05-01T10:00:00Z"),
+        acredita("2026-08-01T10:00:00Z", 50000, "2026-11-01T10:00:00Z"),
+      ],
+      AHORA,
+    );
+    const pasadosDeFecha = [...r.lotesVencidos, ...r.lotesIgnorados];
+    expect(pasadosDeFecha.reduce((a, l) => a + l.restante, 0)).toBe(110000);
+    expect(r.vigente).toBe(50000);
+  });
+
   it("la plata perdonada se sigue gastando primero, por vieja", () => {
     const r = lotesDeSaldo(
       [
