@@ -355,6 +355,7 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
       createdAt: customerCreditMovements.createdAt,
       expiresAt: customerCreditMovements.expiresAt,
       notes: customerCreditMovements.notes,
+      customerPurchaseId: customerCreditMovements.customerPurchaseId,
     })
     .from(customerCreditMovements)
     .where(
@@ -374,6 +375,7 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
         createdAt: m.createdAt ?? new Date(0),
         expiresAt: m.expiresAt,
         notes: m.notes,
+        customerPurchaseId: m.customerPurchaseId,
       }));
     const estado = lotesDeSaldo(suyos, ahora);
     if (estado.vencido <= 0) continue;
@@ -436,6 +438,7 @@ export async function estadoDeSaldoDeCliente(db: Db, customerId: string, ahora =
       createdAt: customerCreditMovements.createdAt,
       expiresAt: customerCreditMovements.expiresAt,
       notes: customerCreditMovements.notes,
+      customerPurchaseId: customerCreditMovements.customerPurchaseId,
     })
     .from(customerCreditMovements)
     .where(eq(customerCreditMovements.customerId, customerId));
@@ -447,6 +450,7 @@ export async function estadoDeSaldoDeCliente(db: Db, customerId: string, ahora =
       createdAt: m.createdAt ?? new Date(0),
       expiresAt: m.expiresAt,
       notes: m.notes,
+      customerPurchaseId: m.customerPurchaseId,
     })),
     ahora,
   );

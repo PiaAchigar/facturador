@@ -152,3 +152,82 @@ describe("lotesDeSaldo", () => {
   });
 });
 
+/**
+ * Una devolución NO se reparte por antigüedad: sale del lote de la compra que
+ * se devolvió.
+ *
+ * Bug encontrado por Pia el 2026-09-10. Mariana tenía dos cancelaciones
+ * acreditadas y le devolvimos la plata de la segunda; el saldo total quedó
+ * bien, pero la ficha mostraba consumido el lote de la PRIMERA — el más viejo—
+ * y el de la compra devuelta intacto. La plata devuelta parecía seguir
+ * disponible y la que sí estaba disponible parecía gastada.
+ */
+describe("consumos atados a una compra", () => {
+  const CUERPO_COMPLETO = "compra-1";
+  const CUERPO_FULL = "compra-2";
+
+  const acreditaDe = (fecha: string, monto: number, vence: string, compra: string) => ({
+    ...acredita(fecha, monto, vence),
+    customerPurchaseId: compra,
+  });
+  const devuelveDe = (fecha: string, monto: number, compra: string) => ({
+    ...gasta(fecha, monto),
+    customerPurchaseId: compra,
+  });
+
+  it("la devolución vacía el lote de SU compra, no el más viejo", () => {
+    const r = lotesDeSaldo(
+      [
+        acreditaDe("2026-09-09T22:40:00Z", 148000, "2026-12-09T22:40:00Z", CUERPO_COMPLETO),
+        acreditaDe("2026-09-10T13:03:00Z", 110667, "2026-12-10T13:03:00Z", CUERPO_FULL),
+        devuelveDe("2026-09-10T13:06:00Z", 110667, CUERPO_FULL),
+      ],
+      AHORA,
+    );
+    expect(r.vigente).toBe(148000);
+    expect(r.lotesVigentes).toHaveLength(1);
+    expect(r.lotesVigentes[0]!.restante).toBe(148000);
+    expect(r.lotesVigentes[0]!.customerPurchaseId).toBe(CUERPO_COMPLETO);
+  });
+
+  it("un gasto común sigue saliendo de lo más viejo", () => {
+    // La regla vieja no cambia: comprar con saldo conviene que consuma primero
+    // lo que está por vencer.
+    const r = lotesDeSaldo(
+      [
+        acreditaDe("2026-09-09T22:40:00Z", 148000, "2026-12-09T22:40:00Z", CUERPO_COMPLETO),
+        acreditaDe("2026-09-10T13:03:00Z", 110667, "2026-12-10T13:03:00Z", CUERPO_FULL),
+        gasta("2026-09-10T14:00:00Z", 50000),
+      ],
+      AHORA,
+    );
+    expect(r.lotesVigentes[0]!.restante).toBe(98000);
+    expect(r.lotesVigentes[1]!.restante).toBe(110667);
+  });
+
+  it("si el consumo supera su lote, el resto sale de los demás", () => {
+    // No debería pasar, pero descartar la diferencia dejaría el total inflado.
+    const r = lotesDeSaldo(
+      [
+        acreditaDe("2026-09-09T22:40:00Z", 148000, "2026-12-09T22:40:00Z", CUERPO_COMPLETO),
+        acreditaDe("2026-09-10T13:03:00Z", 110667, "2026-12-10T13:03:00Z", CUERPO_FULL),
+        devuelveDe("2026-09-10T13:06:00Z", 120000, CUERPO_FULL),
+      ],
+      AHORA,
+    );
+    expect(r.vigente).toBe(138667);
+  });
+
+  it("un consumo de una compra sin lote propio cae en el reparto normal", () => {
+    // Es el caso de pagar una compra NUEVA con saldo: el id apunta a la compra
+    // que se está pagando, que nunca acreditó nada.
+    const r = lotesDeSaldo(
+      [
+        acreditaDe("2026-09-09T22:40:00Z", 148000, "2026-12-09T22:40:00Z", CUERPO_COMPLETO),
+        devuelveDe("2026-09-10T14:00:00Z", 20000, "compra-nueva"),
+      ],
+      AHORA,
+    );
+    expect(r.vigente).toBe(128000);
+  });
+});

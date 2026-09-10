@@ -62,11 +62,21 @@ export type MovimientoDeSaldo = {
   expiresAt: Date | null;
   /** El texto que explica de dónde salió esa plata. Va al cartel. */
   notes?: string | null;
+  /**
+   * La compra a la que está atado este movimiento (1.46.0).
+   *
+   * En una acreditación dice qué cancelación la generó. En un consumo dice de
+   * qué compra sale: una DEVOLUCIÓN nombra la misma compra que acreditó, y por
+   * eso se puede devolver exactamente esa plata en vez de repartirla.
+   */
+  customerPurchaseId?: string | null;
 };
 
 export type LoteDeSaldo = {
   /** El movimiento que creó este lote. */
   id?: string;
+  /** La compra cuya cancelación acreditó esta plata. */
+  customerPurchaseId?: string | null;
   acreditadoEl: Date;
   venceEl: Date | null;
   original: number;
@@ -99,6 +109,7 @@ export function lotesDeSaldo(movimientos: MovimientoDeSaldo[], ahora: Date): Est
     if (m.amount > 0) {
       lotes.push({
         id: m.id,
+        customerPurchaseId: m.customerPurchaseId ?? null,
         acreditadoEl: m.createdAt,
         venceEl: m.expiresAt,
         original: m.amount,
@@ -108,8 +119,30 @@ export function lotesDeSaldo(movimientos: MovimientoDeSaldo[], ahora: Date): Est
       continue;
     }
 
-    // Un consumo: se descuenta del lote más viejo que todavía tenga saldo.
     let porDescontar = -m.amount;
+
+    // Primero, el lote de SU MISMA compra si lo hay.
+    //
+    // Devolverle a la clienta la plata de "Cuerpo Full" tiene que vaciar el
+    // lote que generó cancelar "Cuerpo Full", no el más viejo que ande dando
+    // vueltas. Con el reparto por antigüedad la ficha mostraba consumida una
+    // acreditación anterior y la devuelta intacta: la plata que ya no estaba
+    // parecía disponible (bug encontrado por Pia, 2026-09-10).
+    //
+    // Un consumo cuyo id no corresponde a ningún lote —pagar una compra NUEVA
+    // con saldo apunta a la compra que se paga, que nunca acreditó nada— no
+    // matchea y cae en el reparto de abajo, que es lo correcto.
+    if (m.customerPurchaseId) {
+      for (const lote of lotes) {
+        if (porDescontar <= 0) break;
+        if (lote.customerPurchaseId !== m.customerPurchaseId) continue;
+        const sale = Math.min(lote.restante, porDescontar);
+        lote.restante -= sale;
+        porDescontar -= sale;
+      }
+    }
+
+    // El resto —o todo, si no venía atado a una compra— sale de lo más viejo.
     for (const lote of lotes) {
       if (porDescontar <= 0) break;
       const sale = Math.min(lote.restante, porDescontar);
