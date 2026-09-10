@@ -2,11 +2,7 @@ import { Hono } from "hono";
 import { createDb } from "../../db/client";
 import { badRequest } from "../../lib/errors";
 import { auth, requireAdmin, requireAuth, requirePermission } from "../../middleware/auth";
-import {
-  listSaldosVencidos,
-  perdonarVencimientoDeCliente,
-  vencerSaldoDeCliente,
-} from "../../repositories/customers.repo";
+import { listSaldosVencidos, vencerSaldoDeCliente } from "../../repositories/customers.repo";
 import type { AppBindings, Variables } from "../../env";
 
 const saldosRouter = new Hono<{ Bindings: AppBindings; Variables: Variables }>();
@@ -52,30 +48,6 @@ saldosRouter.post(
     const db = createDb(c.env);
     const hecho = await vencerSaldoDeCliente(db, c.req.param("customerId"));
     if (!hecho) throw badRequest("Esta clienta no tiene saldo vencido.");
-    return c.json(hecho);
-  },
-);
-
-/**
- * Deja el saldo vencido en la cuenta de la clienta y saca el aviso de encima.
- *
- * Es la contracara de `/expire` y **no mueve plata**: no escribe caja ni
- * débito, sólo registra que alguien decidió no reclamar ese vencimiento.
- *
- * Por eso pide `crm:manage` y no admin. Pasar plata a la caja es irreversible y
- * queda en admin; perdonar deja todo como estaba y se deshace poniendo la
- * columna en NULL, así que exigir admin para "no hacer nada" sólo lograría que
- * el aviso quede lleno de casos ya resueltos esperando a Laura.
- */
-saldosRouter.post(
-  "/:customerId/ignore-expiry",
-  auth,
-  requireAuth,
-  requirePermission("crm", "manage"),
-  async (c) => {
-    const db = createDb(c.env);
-    const hecho = await perdonarVencimientoDeCliente(db, c.req.param("customerId"));
-    if (!hecho) throw badRequest("Esta clienta no tiene saldo vencido pendiente de decidir.");
     return c.json(hecho);
   },
 );

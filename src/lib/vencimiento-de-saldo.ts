@@ -51,9 +51,6 @@ export function vencimientoPara(acreditadoEl: Date): Date {
 }
 
 export type MovimientoDeSaldo = {
-  /** Id de la fila. Sólo se arrastra: es lo que después permite marcar
-   *  exactamente la acreditación que se perdona, sin adivinarla por fecha. */
-  id?: string;
   /** Positivo acredita, negativo consume. */
   amount: number;
   createdAt: Date;
@@ -61,44 +58,23 @@ export type MovimientoDeSaldo = {
   expiresAt: Date | null;
   /** El texto que explica de dónde salió esa plata. Va al cartel. */
   notes?: string | null;
-  /**
-   * Cuándo Laura decidió perdonar el vencimiento de ESTA acreditación.
-   *
-   * Va en el movimiento y no en la clienta a propósito: perdonarle a Sofía los
-   * $80.000 de abril no puede silenciar el saldo que se le venza el año que
-   * viene por otra cancelación. Eso sería silenciar plata que nadie miró.
-   */
-  expiryIgnoredAt?: Date | null;
 };
 
 export type LoteDeSaldo = {
-  /** El movimiento que creó este lote. */
-  id?: string;
   acreditadoEl: Date;
   venceEl: Date | null;
   original: number;
   restante: number;
   notes?: string | null;
-  /** No null = pasó de fecha pero Laura decidió dejárselo a la clienta. */
-  ignoradoEl?: Date | null;
 };
 
 export type EstadoDelSaldo = {
   /** Plata a favor que todavía se puede usar. */
   vigente: number;
-  /** Plata a favor cuyo plazo pasó, nadie usó y nadie perdonó todavía. */
+  /** Plata a favor cuyo plazo pasó y nadie usó. */
   vencido: number;
-  /**
-   * Plata cuyo plazo pasó pero Laura decidió dejársela a la clienta.
-   *
-   * Es un tercer balde y no parte de `vigente`: la clienta la puede seguir
-   * usando, pero la ficha tiene que poder decir que está perdonada y no que
-   * está dentro de sus 3 meses.
-   */
-  ignorado: number;
   lotesVencidos: LoteDeSaldo[];
   lotesVigentes: LoteDeSaldo[];
-  lotesIgnorados: LoteDeSaldo[];
 };
 
 /**
@@ -116,13 +92,11 @@ export function lotesDeSaldo(movimientos: MovimientoDeSaldo[], ahora: Date): Est
   for (const m of enOrden) {
     if (m.amount > 0) {
       lotes.push({
-        id: m.id,
         acreditadoEl: m.createdAt,
         venceEl: m.expiresAt,
         original: m.amount,
         restante: m.amount,
         notes: m.notes,
-        ignoradoEl: m.expiryIgnoredAt ?? null,
       });
       continue;
     }
@@ -141,20 +115,14 @@ export function lotesDeSaldo(movimientos: MovimientoDeSaldo[], ahora: Date): Est
   }
 
   const vivos = lotes.filter((l) => l.restante > 0);
-  const pasadosDeFecha = vivos.filter((l) => l.venceEl != null && l.venceEl < ahora);
-  // Perdonar saca el lote del aviso, no de la cuenta: la plata sigue siendo de
-  // la clienta y se sigue gastando primero por ser la más vieja.
-  const vencidos = pasadosDeFecha.filter((l) => l.ignoradoEl == null);
-  const ignorados = pasadosDeFecha.filter((l) => l.ignoradoEl != null);
+  const vencidos = vivos.filter((l) => l.venceEl != null && l.venceEl < ahora);
   const vigentes = vivos.filter((l) => l.venceEl == null || l.venceEl >= ahora);
   const sumar = (ls: LoteDeSaldo[]) => ls.reduce((a, l) => a + l.restante, 0);
 
   return {
     vigente: sumar(vigentes),
     vencido: sumar(vencidos),
-    ignorado: sumar(ignorados),
     lotesVencidos: vencidos,
     lotesVigentes: vigentes,
-    lotesIgnorados: ignorados,
   };
 }
