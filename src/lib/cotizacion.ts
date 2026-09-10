@@ -44,6 +44,19 @@ export type ItemVendible =
       conDescuento: number;
       /** Meses de vigencia. NULL = no vence. */
       validityMonths: number | null;
+      /**
+       * Sesiones que se lleva la clienta si esta fila es un PACK (1.50.0).
+       *
+       * NULL en un combo común. Un pack se vende como UNA unidad —"llevame el
+       * Facial × 4"— pero da CUATRO sesiones: sin esto la compra crearía una
+       * sola fila en `customer_purchase_session` y le faltarían tres visitas
+       * que pagó.
+       *
+       * El PRECIO no se toca acá: `conDescuento` ya viene con el descuento del
+       * pack aplicado por `conPrecioDePack()`. Multiplicar de nuevo cobraría
+       * cuatro veces el precio de cuatro.
+       */
+      packSesiones?: number | null;
     }
   | {
       origen: "depilacion" | "servicio" | "capacitacion";
@@ -80,7 +93,7 @@ function sumarMeses(desde: Date, meses: number): Date {
  * Sirve para que la pantalla ofrezca el número correcto sin adivinar.
  */
 export function sesionesDelPack(item: ItemVendible): number | null {
-  return item.origen === "combo" ? null : item.politica.sesiones;
+  return item.origen === "combo" ? (item.packSesiones ?? null) : item.politica.sesiones;
 }
 
 /**
@@ -112,7 +125,9 @@ export function cotizar(
     }
     return {
       description: item.nombre,
-      sessionsTotal: 1,
+      // Un combo da una sesión; un pack, las suyas. El nombre lo puso Laura
+      // ("Facial × 4"), así que no se le agrega nada.
+      sessionsTotal: item.packSesiones ?? 1,
       promotionId: promo?.id ?? null,
       expiresAt: item.validityMonths == null ? null : sumarMeses(compradoEl, item.validityMonths),
       baseAmount: item.base,

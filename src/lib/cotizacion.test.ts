@@ -160,3 +160,43 @@ describe("cotizar — los montos siempre van de mayor a menor", () => {
     expect(q.discountedAmount).toBeLessThanOrEqual(q.baseAmount);
   });
 });
+
+// ── Packs de catálogo (1.50.0) ─────────────────────────────────────────────
+
+describe("cotizar — un pack de catálogo", () => {
+  /**
+   * Un pack se vende como UNA unidad —"llevame el Facial × 4"— pero la clienta
+   * se lleva CUATRO sesiones. Si `sessionsTotal` quedara en 1, la compra
+   * crearía una sola fila en `customer_purchase_session` y a la clienta le
+   * faltarían tres visitas que pagó.
+   */
+  const pack: ItemVendible = {
+    origen: "combo",
+    id: "p1",
+    nombre: "Combo Facial × 4",
+    base: 240000,
+    // Ya viene con el descuento del pack aplicado por `conPrecioDePack`.
+    conDescuento: 204000,
+    validityMonths: 6,
+    packSesiones: 4,
+  };
+
+  it("le da a la clienta las N sesiones del pack, no una sola", () => {
+    expect(cotizar(pack, 1, null, COMPRA).sessionsTotal).toBe(4);
+  });
+
+  it("cobra el precio que ya trae calculado, sin volver a multiplicar", () => {
+    const c = cotizar(pack, 1, null, COMPRA);
+    expect(c.baseAmount).toBe(240000);
+    expect(c.discountedAmount).toBe(204000);
+    expect(c.finalAmount).toBe(204000);
+  });
+
+  it("un combo común sigue dando una sola sesión", () => {
+    expect(cotizar(combo, 1, null, COMPRA).sessionsTotal).toBe(1);
+  });
+
+  it("se vende de a uno: pedir 2 packs sigue siendo un error", () => {
+    expect(() => cotizar(pack, 2, null, COMPRA)).toThrow(/de a uno/i);
+  });
+});

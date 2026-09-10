@@ -21,7 +21,12 @@ const num = (v: unknown) => (v == null ? null : Number(v));
 /** `assembleCombo` recibe la cabecera como `Record<string, unknown>` y la
  *  desparrama, así que del otro lado los campos propios del combo llegan sin
  *  tipo. Esto los recupera en un solo lugar en vez de castear en cada uso. */
-type ComboArmado = { servicesSubtotal: number; finalAmount: number } & Record<string, unknown>;
+type ComboArmado = {
+  servicesSubtotal: number;
+  finalAmount: number;
+  kind: string;
+  packSessions: number | null;
+} & Record<string, unknown>;
 
 function comboVendible(c: ComboArmado): ItemVendible {
   return {
@@ -29,8 +34,12 @@ function comboVendible(c: ComboArmado): ItemVendible {
     id: c.id as string,
     nombre: (c.name as string | null) ?? "Sin nombre",
     base: c.servicesSubtotal,
+    // En un pack esto ya viene con el descuento del pack aplicado
+    // (`conPrecioDePack`), así que la cotización no vuelve a multiplicar.
     conDescuento: c.finalAmount,
     validityMonths: (c.validityMonths as number | null) ?? null,
+    // Sólo en un pack: las sesiones que se lleva la clienta (1.50.0).
+    packSesiones: c.kind === "pack" ? ((c.packSessions as number | null) ?? null) : null,
   };
 }
 
@@ -46,7 +55,15 @@ export type ItemDeCatalogo = ItemVendible & {
 
 function aItemDeCatalogo(item: ItemVendible): ItemDeCatalogo {
   return item.origen === "combo"
-    ? { ...item, packSesiones: null, packDescuentoPct: null, precioDesde: item.conDescuento }
+    ? {
+        ...item,
+        // Un pack de catálogo SÍ tiene sesiones; un combo común, no.
+        packSesiones: item.packSesiones ?? null,
+        // El descuento del pack ya está adentro de `conDescuento`, y volver a
+        // mostrarlo como porcentaje suelto invitaría a aplicarlo dos veces.
+        packDescuentoPct: null,
+        precioDesde: item.conDescuento,
+      }
     : {
         ...item,
         packSesiones: item.politica.sesiones,

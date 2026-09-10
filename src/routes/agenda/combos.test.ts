@@ -1,12 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { comboBody } from "./combos";
+import { comboBody, combosRouter } from "./combos";
+
+const AREA = "aaaaaaaa-1111-1111-1111-111111111111";
+const LIMPIEZA = "11111111-1111-1111-1111-111111111111";
+const PEELING = "22222222-2222-2222-2222-222222222222";
+const COMBO = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 
 const valido = {
   name: "Depilación cuerpo completo",
   priceType: "fixed" as const,
   fixedPrice: 120000,
   validityMonths: 12,
-  lines: [{ serviceId: "11111111-1111-1111-1111-111111111111", sessionsIncluded: 8 }],
+  areaCategoryId: AREA,
+  lines: [{ serviceId: LIMPIEZA, sessionsIncluded: 8 }],
+};
+
+/** Un pack que repite un combo: sin renglones propios. */
+const packValido = {
+  name: "Facial × 4",
+  priceType: "percentage" as const,
+  discountPercentage: 0,
+  validityMonths: 12,
+  areaCategoryId: AREA,
+  kind: "pack" as const,
+  packOfComboId: COMBO,
+  packSessions: 4,
+  lines: [],
 };
 
 describe("comboBody", () => {
@@ -155,11 +174,151 @@ describe("comboBody", () => {
     const r = comboBody.safeParse({
       ...valido,
       lines: [
-        { serviceId: "11111111-1111-1111-1111-111111111111", sessionsIncluded: 8 },
-        { serviceId: "11111111-1111-1111-1111-111111111111", sessionsIncluded: 4 },
+        { serviceId: LIMPIEZA, sessionsIncluded: 8 },
+        { serviceId: LIMPIEZA, sessionsIncluded: 4 },
       ],
     });
     expect(r.success).toBe(false);
-    if (!r.success) expect(r.error.issues[0]?.message).toMatch(/repetido/i);
+    if (!r.success) expect(r.error.issues.some((i) => /repetido/i.test(i.message))).toBe(true);
+  });
+});
+
+// ── 1.50.0 ─────────────────────────────────────────────────────────────────
+
+describe("comboBody — el área (1.50.0)", () => {
+  it("rechaza un combo sin área: se elige, no se deduce de los servicios", () => {
+    const { areaCategoryId: _, ...sinArea } = valido;
+    const r = comboBody.safeParse(sinArea);
+    expect(r.success).toBe(false);
+  });
+
+  it("rechaza un área que no es un uuid, con mensaje en castellano", () => {
+    const r = comboBody.safeParse({ ...valido, areaCategoryId: "Estética" });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0]?.message).toMatch(/elegir un área/i);
+  });
+});
+
+describe("comboBody — sessionsIncluded ya no hace falta (spec §4.3)", () => {
+  it("una línea sin sesiones vale 1: el combo es UNA sesión de cada servicio", () => {
+    const r = comboBody.safeParse({ ...valido, lines: [{ serviceId: LIMPIEZA }] });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.lines[0]?.sessionsIncluded).toBe(1);
+  });
+});
+
+describe("comboBody — packs (1.50.0)", () => {
+  it("acepta un pack que repite un combo, sin renglones propios", () => {
+    expect(comboBody.safeParse(packValido).success).toBe(true);
+  });
+
+  it("acepta un pack de servicios sueltos, sin combo al que apuntar", () => {
+    const { packOfComboId: _, ...resto } = packValido;
+    const r = comboBody.safeParse({ ...resto, lines: [{ serviceId: LIMPIEZA }] });
+    expect(r.success).toBe(true);
+  });
+
+  it("rechaza un pack sin repeticiones", () => {
+    const { packSessions: _, ...sinN } = packValido;
+    const r = comboBody.safeParse(sinN);
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /cuántas veces se repite/i.test(i.message))).toBe(true);
+    }
+  });
+
+  it("rechaza un pack que repite una sola vez: eso es el combo", () => {
+    const r = comboBody.safeParse({ ...packValido, packSessions: 1 });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0]?.message).toMatch(/al menos 2 veces/i);
+  });
+
+  it("rechaza un COMBO con campos de pack: si querés repetirlo, armá un pack", () => {
+    const r = comboBody.safeParse({ ...valido, packSessions: 4 });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /armá un pack/i.test(i.message))).toBe(true);
+    }
+  });
+
+  it("rechaza un pack marcado como 'se hacen juntos': eso lo dice el combo", () => {
+    const r = comboBody.safeParse({ ...packValido, servicesTogether: true });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /lo dice el combo/i.test(i.message))).toBe(true);
+    }
+  });
+
+  it("rechaza medio descuento propio: hace falta el porcentaje Y el redondeo", () => {
+    const r = comboBody.safeParse({ ...packValido, packDiscountPercentage: 20 });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /porcentaje Y el redondeo/i.test(i.message))).toBe(true);
+    }
+  });
+
+  it("acepta el descuento propio completo", () => {
+    const r = comboBody.safeParse({
+      ...packValido,
+      packDiscountPercentage: 20,
+      packRoundingBase: 500,
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("acepta un descuento propio en CERO, que es un pack sin rebaja", () => {
+    const r = comboBody.safeParse({
+      ...packValido,
+      packDiscountPercentage: 0,
+      packRoundingBase: 1,
+    });
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("comboBody — se hacen juntos (§4.4)", () => {
+  it("acepta un combo de dos servicios marcado como juntos", () => {
+    const r = comboBody.safeParse({
+      ...valido,
+      servicesTogether: true,
+      lines: [{ serviceId: LIMPIEZA }, { serviceId: PEELING }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("por defecto NO viene marcado: ante un descuido, la opción más libre", () => {
+    const r = comboBody.safeParse({
+      ...valido,
+      lines: [{ serviceId: LIMPIEZA }, { serviceId: PEELING }],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.servicesTogether ?? false).toBe(false);
+  });
+
+  it("rechaza 'juntos' con un solo servicio: no hay nada que juntar", () => {
+    const r = comboBody.safeParse({ ...valido, servicesTogether: true });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /al menos dos servicios/i.test(i.message))).toBe(true);
+    }
+  });
+});
+
+describe("el orden de las rutas", () => {
+  /**
+   * Hono resuelve por ORDEN DE REGISTRO. Si `/admin/:id` se registra antes que
+   * `/admin/tarifarios`, un GET a tarifarios entra por el comodín con
+   * id="tarifarios" y devuelve un 404 de combo inexistente — sin error, sin
+   * aviso, simplemente la pantalla vacía. Ya pasó con `/credits/expired` en las
+   * rutas de saldos, así que acá queda fijado.
+   */
+  it("las rutas de path fijo van ANTES del comodín /admin/:id", () => {
+    const gets = combosRouter.routes.filter((r) => r.method === "GET").map((r) => r.path);
+    const comodin = gets.indexOf("/admin/:id");
+    const tarifarios = gets.indexOf("/admin/tarifarios");
+
+    expect(comodin).toBeGreaterThanOrEqual(0);
+    expect(tarifarios).toBeGreaterThanOrEqual(0);
+    expect(tarifarios).toBeLessThan(comodin);
   });
 });
