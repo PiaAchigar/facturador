@@ -51,6 +51,10 @@ export function vencimientoPara(acreditadoEl: Date): Date {
 }
 
 export type MovimientoDeSaldo = {
+  /** Id de la fila. Se arrastra hasta el lote porque aplazar necesita saber
+   *  QUÉ acreditación mover, y adivinarla por fecha se rompe el día que dos
+   *  caen en el mismo instante. */
+  id?: string;
   /** Positivo acredita, negativo consume. */
   amount: number;
   createdAt: Date;
@@ -61,6 +65,8 @@ export type MovimientoDeSaldo = {
 };
 
 export type LoteDeSaldo = {
+  /** El movimiento que creó este lote. */
+  id?: string;
   acreditadoEl: Date;
   venceEl: Date | null;
   original: number;
@@ -92,6 +98,7 @@ export function lotesDeSaldo(movimientos: MovimientoDeSaldo[], ahora: Date): Est
   for (const m of enOrden) {
     if (m.amount > 0) {
       lotes.push({
+        id: m.id,
         acreditadoEl: m.createdAt,
         venceEl: m.expiresAt,
         original: m.amount,

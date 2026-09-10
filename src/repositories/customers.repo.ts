@@ -17,6 +17,11 @@ import {
 } from "../db/schema";
 import { cashRegister } from "../db/schema";
 import { lotesDeSaldo } from "../lib/vencimiento-de-saldo";
+import {
+  notasConAplazo,
+  origenYAplazos,
+  razonesParaNoAplazar,
+} from "../lib/aplazo-de-vencimiento";
 
 const customerSummary = {
   id: customers.id,
@@ -344,6 +349,7 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
 
   const movimientos = await db
     .select({
+      id: customerCreditMovements.id,
       customerId: customerCreditMovements.customerId,
       amount: customerCreditMovements.amount,
       createdAt: customerCreditMovements.createdAt,
@@ -363,6 +369,7 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
     const suyos = movimientos
       .filter((m) => m.customerId === cliente.customerId)
       .map((m) => ({
+        id: m.id,
         amount: Number(m.amount),
         createdAt: m.createdAt ?? new Date(0),
         expiresAt: m.expiresAt,
@@ -410,6 +417,130 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
  * que vence, con el detalle de dónde vino. Si algún día se quiere el número
  * contable puro, se saca este insert y el resto sigue funcionando igual.
  */
+/**
+ * El saldo a favor de UNA clienta, abierto en sus lotes.
+ *
+ * La ficha mostraba `credit_balance`, un número solo, que suma lo vigente con
+ * lo vencido y no dice cuándo vence nada. Con la clienta en el mostrador eso no
+ * alcanza para responderle "¿hasta cuándo tengo?".
+ *
+ * Devuelve los lotes VIVOS —los que todavía tienen plata—, vencidos y vigentes
+ * en una sola lista ordenada del más viejo al más nuevo, que es el orden en el
+ * que se van a gastar.
+ */
+export async function estadoDeSaldoDeCliente(db: Db, customerId: string, ahora = new Date()) {
+  const movimientos = await db
+    .select({
+      id: customerCreditMovements.id,
+      amount: customerCreditMovements.amount,
+      createdAt: customerCreditMovements.createdAt,
+      expiresAt: customerCreditMovements.expiresAt,
+      notes: customerCreditMovements.notes,
+    })
+    .from(customerCreditMovements)
+    .where(eq(customerCreditMovements.customerId, customerId));
+
+  const estado = lotesDeSaldo(
+    movimientos.map((m) => ({
+      id: m.id,
+      amount: Number(m.amount),
+      createdAt: m.createdAt ?? new Date(0),
+      expiresAt: m.expiresAt,
+      notes: m.notes,
+    })),
+    ahora,
+  );
+
+  const aSalida = (l: (typeof estado.lotesVigentes)[number], vencido: boolean) => {
+    const { origen, aplazos } = origenYAplazos(l.notes ?? null);
+    return {
+      id: l.id ?? null,
+      monto: l.restante,
+      original: l.original,
+      acreditadoEl: l.acreditadoEl,
+      venceEl: l.venceEl,
+      vencido,
+      detalle: origen,
+      // El historial va aparte del origen: un lote aplazado tres veces se leía
+      // como un chorizo donde no se encontraba de dónde salió la plata.
+      aplazos,
+    };
+  };
+
+  const lotes = [
+    ...estado.lotesVencidos.map((l) => aSalida(l, true)),
+    ...estado.lotesVigentes.map((l) => aSalida(l, false)),
+  ].sort((a, b) => a.acreditadoEl.getTime() - b.acreditadoEl.getTime());
+
+  return { vigente: estado.vigente, vencido: estado.vencido, total: estado.vigente + estado.vencido, lotes };
+}
+
+/**
+ * Corre para adelante la fecha de vencimiento de una o varias acreditaciones.
+ *
+ * **No hay concepto nuevo**: aplazar es mover `expires_at`, la misma columna
+ * que se estampa al acreditar. Por eso no hay migración — y por eso un saldo
+ * aplazado vuelve a vencer solo cuando llega la fecha nueva.
+ *
+ * Valida que los movimientos sean DE ESA CLIENTA antes de tocarlos: los ids
+ * vienen del navegador y sin este filtro alcanzaría con cambiar uno para
+ * estirarle el vencimiento a cualquier otra.
+ */
+export async function aplazarVencimientos(
+  db: Db,
+  customerId: string,
+  movimientoIds: string[],
+  nuevaFecha: Date,
+  motivo: string | null,
+  ahora = new Date(),
+): Promise<{ aplazados: number; nuevaFecha: Date } | { error: string }> {
+  if (movimientoIds.length === 0) return { error: "No se eligió ningún saldo para aplazar." };
+
+  const filas = await db
+    .select({
+      id: customerCreditMovements.id,
+      amount: customerCreditMovements.amount,
+      expiresAt: customerCreditMovements.expiresAt,
+      notes: customerCreditMovements.notes,
+    })
+    .from(customerCreditMovements)
+    .where(
+      and(
+        eq(customerCreditMovements.customerId, customerId),
+        inArray(customerCreditMovements.id, movimientoIds),
+      ),
+    );
+
+  if (filas.length !== movimientoIds.length) {
+    return { error: "Alguno de esos saldos no es de esta clienta." };
+  }
+
+  for (const f of filas) {
+    const razones = razonesParaNoAplazar(
+      { venceEl: f.expiresAt, esAcreditacion: Number(f.amount) > 0 },
+      nuevaFecha,
+      ahora,
+    );
+    // Se corta con el primero: son todos motivos por los que la operación
+    // entera no va, y aplazar la mitad dejaría a la clienta con dos plazos.
+    if (razones.length > 0) return { error: razones[0]! };
+  }
+
+  await db.transaction(async (tx) => {
+    for (const f of filas) {
+      await tx
+        .update(customerCreditMovements)
+        .set({
+          expiresAt: nuevaFecha,
+          notes: notasConAplazo(f.notes, f.expiresAt, nuevaFecha, motivo),
+        })
+        .where(eq(customerCreditMovements.id, f.id));
+    }
+  });
+
+  return { aplazados: filas.length, nuevaFecha };
+}
+
 export async function vencerSaldoDeCliente(
   db: Db,
   customerId: string,
