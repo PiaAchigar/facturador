@@ -305,7 +305,8 @@ comprasRouter.post(
     const compra = await getCompraById(db, id);
     if (!compra) throw notFound("Compra");
 
-    const { motivos, monto, notaDeCreditoId, borradorAnulado } = await devolverPlataDeCompra(
+    const { motivos, monto, notaDeCreditoId, refacturaId, borradorAnulado } =
+      await devolverPlataDeCompra(
       db,
       id,
       {
@@ -318,7 +319,7 @@ comprasRouter.post(
     }
     // El front avisa qué quedó pendiente: si la compra estaba facturada en
     // ARCA, hay una nota de crédito en borrador esperando en el facturador.
-    return c.json({ monto, notaDeCreditoId, borradorAnulado });
+    return c.json({ monto, notaDeCreditoId, refacturaId, borradorAnulado });
   },
 );
 

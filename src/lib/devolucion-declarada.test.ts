@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repartirDevolucion } from "./devolucion-declarada";
+import { comprobantesDeDevolucion, repartirDevolucion } from "./devolucion-declarada";
 
 describe("repartirDevolucion", () => {
   it("cobrado con factura: la devolución sale declarada", () => {
@@ -52,5 +52,41 @@ describe("repartirDevolucion", () => {
       declarado: 0,
       noDeclarado: 0,
     });
+  });
+});
+
+describe("comprobantesDeDevolucion", () => {
+  it("devolución parcial: la nota va por el TOTAL y se refactura la diferencia", () => {
+    // El caso real: pack de 3 por $76.000, usó una sesión, se le devuelven
+    // $50.667. La nota igual acredita los $76.000 y se refacturan $25.333.
+    expect(comprobantesDeDevolucion(76000, 50667)).toEqual({
+      notaPor: 76000,
+      refacturaPor: 25333,
+    });
+  });
+
+  it("devolución total: nota por el total y nada que refacturar", () => {
+    expect(comprobantesDeDevolucion(76000, 76000)).toEqual({
+      notaPor: 76000,
+      refacturaPor: 0,
+    });
+  });
+
+  it("la nota NUNCA es por lo devuelto: un CAE no se acredita a medias", () => {
+    const r = comprobantesDeDevolucion(100000, 1);
+    expect(r.notaPor).toBe(100000);
+  });
+
+  it("nota + refactura reconstruyen la factura original", () => {
+    const r = comprobantesDeDevolucion(76000, 50667);
+    expect(r.notaPor - r.refacturaPor).toBe(50667);
+  });
+
+  it("devolver más de lo facturado no genera una refactura negativa", () => {
+    expect(comprobantesDeDevolucion(50000, 80000).refacturaPor).toBe(0);
+  });
+
+  it("sin factura no hay comprobantes", () => {
+    expect(comprobantesDeDevolucion(0, 5000)).toEqual({ notaPor: 0, refacturaPor: 0 });
   });
 });

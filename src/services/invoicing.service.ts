@@ -248,11 +248,12 @@ export async function emitBatch(db: Db, env: AppBindings, invoiceIds?: string[])
  * Manda a ARCA una nota de crédito que estaba en borrador.
  *
  * Es la contracara de `emitInvoice` y no una variante: la nota se emite contra
- * el tipo y el número de la factura ORIGINAL, y su monto puede ser menor —una
- * devolución parcial devuelve sólo las sesiones sin usar—.
+ * el tipo y el número de la factura ORIGINAL, por el TOTAL de esa factura.
  *
- * No toca el estado de la factura original: sigue emitida, porque parte de esa
- * venta sigue en pie. Anularla entera es otra acción ("Anular comprobante").
+ * **Un comprobante con CAE no se acredita a medias** (regla de Pia,
+ * 2026-09-11): si la devolución fue parcial, la nota igual va por todo y lo que
+ * la clienta sí consumió se refactura aparte. Por eso al emitirla la original
+ * queda ANULADA — ya no representa ninguna operación viva.
  */
 async function emitirNotaDeCredito(
   db: Db,
@@ -293,6 +294,9 @@ async function emitirNotaDeCredito(
       status: "emitted",
       emittedAt: new Date(),
     });
+    // La nota cubre el total: la factura original deja de estar viva. Sin esto
+    // quedaría "Emitida" para siempre y sumaría en cualquier total del período.
+    await updateInvoice(tx, nota.creditNoteOf!, { status: "cancelled" });
     await insertArcaLog(tx, {
       invoiceId: nota.id,
       cae: result.cae,

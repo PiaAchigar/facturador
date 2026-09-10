@@ -16,7 +16,7 @@ import { razonesParaNoBorrarCompra, type ImpactoDeBorrado } from "../lib/compra-
 import { saldoAAcreditar } from "../lib/saldo-de-cancelacion";
 import { planDePagoConSaldo } from "../lib/pago-con-saldo";
 import { vencimientoPara } from "../lib/vencimiento-de-saldo";
-import { repartirDevolucion } from "../lib/devolucion-declarada";
+import { comprobantesDeDevolucion, repartirDevolucion } from "../lib/devolucion-declarada";
 import { getInvoiceById, updateInvoice } from "./invoices.repo";
 import { vencimientoHeredado } from "../lib/herencia-de-vencimiento";
 import {
@@ -589,6 +589,8 @@ export async function devolverPlataDeCompra(
   monto: number;
   /** La nota de crédito que quedó en borrador esperando a Laura, si hizo falta. */
   notaDeCreditoId?: string | null;
+  /** La factura nueva por lo que la clienta sí consumió (devolución parcial). */
+  refacturaId?: string | null;
   /** true si la factura era borrador y se canceló sola. */
   borradorAnulado?: boolean;
 }> {
@@ -632,6 +634,7 @@ export async function devolverPlataDeCompra(
   const factura = facturaId ? await getInvoiceById(db, facturaId) : null;
 
   let notaDeCreditoId: string | null = null;
+  let refacturaId: string | null = null;
   let borradorAnulado = false;
 
   await db.transaction(async (tx) => {
@@ -665,6 +668,16 @@ export async function devolverPlataDeCompra(
     }
 
     if (factura && montoDeclarado > 0) {
+      // Un comprobante con CAE no se acredita a medias: la nota de crédito va
+      // SIEMPRE por el total de la factura, y lo que la clienta sí consumió se
+      // vuelve a facturar aparte (regla de Pia, 2026-09-11). Acreditar sólo la
+      // parte devuelta dejaba viva una factura por un importe que ya no era el
+      // de la operación.
+      const { notaPor, refacturaPor: aRefacturar } = comprobantesDeDevolucion(
+        Number(factura.totalAmount ?? 0),
+        montoDeclarado,
+      );
+
       if (factura.status === "draft") {
         // Todavía no fue a ARCA: no existe fiscalmente, así que se cancela y
         // listo. Decisión de Pia (2026-09-10): que no le quede a Laura un
@@ -672,18 +685,18 @@ export async function devolverPlataDeCompra(
         await updateInvoice(tx, factura.id, { status: "cancelled" });
         borradorAnulado = true;
       } else {
-        // Ya emitida: hace falta una NOTA DE CRÉDITO de verdad. Nace en
-        // borrador y Laura la emite desde Facturas cuando quiera, con el mismo
-        // botón que usa para los borradores de factura.
+        // Ya emitida: hace falta una NOTA DE CRÉDITO de verdad, por el TOTAL.
+        // Nace en borrador y Laura la emite desde Facturas cuando quiera, con
+        // el mismo botón que usa para los borradores de factura.
         const [nota] = await tx
           .insert(invoices)
           .values({
             customerId: compra.customerId,
             issuerId: factura.issuerId,
             invoiceType: factura.invoiceType,
-            subtotal: dec(montoDeclarado),
+            subtotal: dec(notaPor),
             taxAmount: "0.00",
-            totalAmount: dec(montoDeclarado),
+            totalAmount: dec(notaPor),
             description: `Devolución — ${ctx.descripcion}`,
             status: "draft",
             creditNoteOf: factura.id,
@@ -692,10 +705,46 @@ export async function devolverPlataDeCompra(
           .returning({ id: invoices.id });
         notaDeCreditoId = nota?.id ?? null;
       }
+
+      // La refacturación por la diferencia. Vale para los dos casos de arriba:
+      // si la factura era borrador, cancelarla entera perdía la parte que la
+      // clienta sí consumió, y había que emitirla a mano.
+      if (aRefacturar > 0) {
+        const [refactura] = await tx
+          .insert(invoices)
+          .values({
+            customerId: compra.customerId,
+            issuerId: factura.issuerId,
+            invoiceType: factura.invoiceType,
+            subtotal: dec(aRefacturar),
+            taxAmount: "0.00",
+            totalAmount: dec(aRefacturar),
+            description: `${ctx.descripcion} — sesiones usadas (reemplaza comprobante anulado)`,
+            status: "draft",
+            invoiceDate: new Date(),
+          })
+          .returning({ id: invoices.id });
+
+        // Sin la línea, el PDF sale sin concepto y ARCA recibe un comprobante
+        // que no dice de qué es.
+        if (refactura) {
+          await tx.insert(lineItems).values({
+            invoiceId: refactura.id,
+            description: `${ctx.descripcion} — sesiones usadas`,
+            customerPurchaseId: id,
+            quantity: 1,
+            unitPrice: dec(aRefacturar),
+            taxAmount: "0.00",
+            subtotal: dec(aRefacturar),
+            totalAmount: dec(aRefacturar),
+          });
+        }
+        refacturaId = refactura?.id ?? null;
+      }
     }
   });
 
-  return { motivos: [], monto, notaDeCreditoId, borradorAnulado };
+  return { motivos: [], monto, notaDeCreditoId, refacturaId, borradorAnulado };
 }
 
 /** Lo efectivamente cobrado de una compra: la única definición del saldo. */

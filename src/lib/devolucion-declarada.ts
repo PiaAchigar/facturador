@@ -38,3 +38,34 @@ export function repartirDevolucion(monto: number, cobros: CobroDeCompra[]): Repa
   // tienen que sumar EXACTAMENTE lo devuelto o la caja queda por uno o dos pesos.
   return { declarado, noDeclarado: monto - declarado };
 }
+
+/**
+ * Qué comprobantes hay que emitir al devolver plata de una factura.
+ *
+ * **Un comprobante con CAE no se acredita a medias** (regla de Pia,
+ * 2026-09-11). Aunque se devuelva una parte, la nota de crédito va por el
+ * TOTAL de la factura y lo que la clienta sí consumió se vuelve a facturar
+ * aparte. Acreditar sólo lo devuelto dejaba viva una factura por un importe
+ * que ya no era el de ninguna operación real.
+ */
+export type ComprobantesDeDevolucion = {
+  /** Monto de la nota de crédito: siempre el total de la factura. */
+  notaPor: number;
+  /** Monto a refacturar. 0 si se devolvió todo. */
+  refacturaPor: number;
+};
+
+export function comprobantesDeDevolucion(
+  totalFacturado: number,
+  montoDevueltoDeclarado: number,
+): ComprobantesDeDevolucion {
+  if (totalFacturado <= 0 || montoDevueltoDeclarado <= 0) {
+    return { notaPor: 0, refacturaPor: 0 };
+  }
+  return {
+    notaPor: totalFacturado,
+    // Nunca negativo: devolver más de lo facturado no genera una refactura al
+    // revés, simplemente no queda nada que volver a cobrar.
+    refacturaPor: Math.max(0, totalFacturado - montoDevueltoDeclarado),
+  };
+}
