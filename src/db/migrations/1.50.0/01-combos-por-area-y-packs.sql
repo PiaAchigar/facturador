@@ -35,8 +35,6 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 
 DO $$
-DECLARE
-  v_areas uuid[];
 BEGIN
   -- ══ 1. Las columnas nuevas de `combos` ═════════════════════════════════════
 
@@ -178,25 +176,49 @@ BEGIN
   -- descuento" que ya se mostraba en pantalla.
   --
   -- Depilación NO entra: tiene su propio motor y su propia config.
-  SELECT array_agg(id) INTO v_areas
-  FROM categories
-  WHERE kind = 'area'
-    AND name IN ('Estética', 'Medicina y Dermatología', 'Masajes y Bienestar');
-
-  IF v_areas IS NULL OR array_length(v_areas, 1) <> 3 THEN
-    RAISE EXCEPTION 'Esperaba las 3 áreas de catálogo y encontré %',
-      COALESCE(array_length(v_areas, 1), 0);
+  --
+  -- ⚠️ Sin variables de PL/pgSQL, y a propósito. La primera versión juntaba los
+  -- ids en un `uuid[]` y lo desarmaba con `SELECT unnest(v_areas)`. Por psql
+  -- anda —probado contra PG 15.4 y PG 17.11— pero el SQL Editor de Supabase lo
+  -- rechazó con `42P01: relation "v_areas" does not exist` (2026-09-10). No se
+  -- pudo reproducir qué hace el editor con esa consulta, así que se sacó el
+  -- construido entero en vez de adivinar: el INSERT lee de `categories`
+  -- directo, que es más simple y no depende de nada raro.
+  --
+  -- La guarda va antes y por separado. Si las tres áreas no están, algo se
+  -- renombró y sembrar a medias dejaría un área sin tarifario y sus packs sin
+  -- precio, en silencio.
+  IF (
+    SELECT count(*) FROM categories
+    WHERE kind = 'area'
+      AND name IN ('Estética', 'Medicina y Dermatología', 'Masajes y Bienestar')
+  ) <> 3 THEN
+    RAISE EXCEPTION 'Esperaba las 3 áreas de catálogo (Estética, Medicina y Dermatología, Masajes y Bienestar) y no están todas';
   END IF;
 
   INSERT INTO area_pack_policy (area_category_id, pack_sessions, pack_discount_percentage, pack_rounding_base)
-  SELECT unnest(v_areas), 3, 15, 1000
+  SELECT id, 3, 15, 1000
+  FROM categories
+  WHERE kind = 'area'
+    AND name IN ('Estética', 'Medicina y Dermatología', 'Masajes y Bienestar')
   ON CONFLICT (area_category_id) DO NOTHING;
 
   RAISE NOTICE '1.50.0 aplicada: combos con área/kind/pack/juntos + area_pack_policy sembrada';
 END $$;
 
 -- ── Verificación (correr aparte, NO dentro del bloque) ──────────────────────
--- \d combos
+--
+-- Sin meta-comandos de psql (los que empiezan con backslash): el SQL Editor de
+-- Supabase no los entiende, y dejarlos escritos acá invita a pegarlos por error.
+--
+-- SELECT column_name, data_type, is_nullable
+--   FROM information_schema.columns
+--  WHERE table_name = 'combos'
+--    AND column_name IN ('area_category_id', 'kind', 'pack_of_combo_id',
+--                        'pack_sessions', 'pack_discount_percentage',
+--                        'pack_rounding_base', 'services_together')
+--  ORDER BY column_name;
+--
 -- SELECT c.name AS area, p.pack_sessions, p.pack_discount_percentage, p.pack_rounding_base
 --   FROM area_pack_policy p JOIN categories c ON c.id = p.area_category_id
 --  ORDER BY c.name;
