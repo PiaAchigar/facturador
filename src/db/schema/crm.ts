@@ -81,6 +81,12 @@ export const customerCreditMovements = pgTable("customer_credit_movements", {
    *  Se guarda por movimiento y no se calcula: si mañana cambia la política,
    *  la plata ya acreditada mantiene el plazo que se le prometió. */
   expiresAt: timestamp("expires_at"),
+  /** Cuándo se decidió dejarle a la clienta esta acreditación ya vencida
+   *  (1.49.0). NULL = sin decidir, y por eso aparece en el aviso. No toca
+   *  `credit_balance`: perdonar cambia a quién avisa el sistema, no de quién
+   *  es la plata. Va por movimiento y no por cliente para que perdonar un
+   *  vencimiento no silencie el siguiente. */
+  expiryIgnoredAt: timestamp("expiry_ignored_at"),
   notes: text("notes"),
   createdAt: createdAt(),
 });

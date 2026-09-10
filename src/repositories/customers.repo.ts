@@ -344,10 +344,12 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
 
   const movimientos = await db
     .select({
+      id: customerCreditMovements.id,
       customerId: customerCreditMovements.customerId,
       amount: customerCreditMovements.amount,
       createdAt: customerCreditMovements.createdAt,
       expiresAt: customerCreditMovements.expiresAt,
+      expiryIgnoredAt: customerCreditMovements.expiryIgnoredAt,
       notes: customerCreditMovements.notes,
     })
     .from(customerCreditMovements)
@@ -363,9 +365,11 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
     const suyos = movimientos
       .filter((m) => m.customerId === cliente.customerId)
       .map((m) => ({
+        id: m.id,
         amount: Number(m.amount),
         createdAt: m.createdAt ?? new Date(0),
         expiresAt: m.expiresAt,
+        expiryIgnoredAt: m.expiryIgnoredAt,
         notes: m.notes,
       }));
     const estado = lotesDeSaldo(suyos, ahora);
@@ -379,8 +383,14 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
       vigente: estado.vigente,
       // De dónde salió cada peso vencido. Es lo que hace entendible el
       // movimiento de caja meses después.
+      // `original` además de `monto`: cuando la clienta gastó parte del lote,
+      // los dos números no coinciden y el cartel mostraba sólo el segundo. Sin
+      // el primero, "$80.000" de una cancelación de $100.000 no se puede
+      // reconstruir mirando la pantalla.
       origenes: estado.lotesVencidos.map((l) => ({
+        id: l.id ?? null,
         monto: l.restante,
+        original: l.original,
         acreditadoEl: l.acreditadoEl,
         venceEl: l.venceEl,
         detalle: l.notes ?? null,
@@ -405,6 +415,41 @@ export async function listSaldosVencidos(db: Db, ahora = new Date()) {
  * que vence, con el detalle de dónde vino. Si algún día se quiere el número
  * contable puro, se saca este insert y el resto sigue funcionando igual.
  */
+/**
+ * Deja el saldo vencido de una clienta en su cuenta y lo saca del aviso.
+ *
+ * **Es el "no" del aviso, no una variante del "sí".** `vencerSaldoDeCliente`
+ * mueve plata: escribe un débito y una fila de caja. Esta función no toca
+ * `credit_balance` ni la caja — sólo estampa la fecha en que alguien decidió
+ * no reclamar ese vencimiento. La clienta sigue pudiendo gastar esa plata.
+ *
+ * Marca los movimientos **uno por uno** (los lotes que hoy están vencidos y sin
+ * perdonar) en vez de marcar a la clienta: así el saldo que se le venza el año
+ * que viene vuelve a aparecer en el aviso, que es todo el punto.
+ *
+ * Devuelve null si no había nada que perdonar, para que la ruta responda 400 en
+ * vez de fingir que hizo algo.
+ */
+export async function perdonarVencimientoDeCliente(
+  db: Db,
+  customerId: string,
+  ahora = new Date(),
+): Promise<{ monto: number; lotes: number } | null> {
+  const vencidos = await listSaldosVencidos(db, ahora);
+  const mio = vencidos.find((v) => v.customerId === customerId);
+  if (!mio || mio.vencido <= 0) return null;
+
+  const ids = mio.origenes.map((o) => o.id).filter((v): v is string => v != null);
+  if (ids.length === 0) return null;
+
+  await db
+    .update(customerCreditMovements)
+    .set({ expiryIgnoredAt: ahora })
+    .where(inArray(customerCreditMovements.id, ids));
+
+  return { monto: mio.vencido, lotes: ids.length };
+}
+
 export async function vencerSaldoDeCliente(
   db: Db,
   customerId: string,
